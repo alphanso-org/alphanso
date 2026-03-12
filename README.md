@@ -71,7 +71,59 @@ python3 -m alphanso path/to/config.yaml
 
 Results are saved to `alphanso_output/<config_name>/`. You can specify a custom output directory as a second CLI argument: `alphanso config.yaml my_output/`.
 
-See the `example_usage/` directory for ready-to-run examples.
+#### Example YAML Configurations
+
+**Beam** — monoenergetic alpha beam on a thick target:
+
+```yaml
+name: "Be-9 Beam Calculation"
+calc_type: "beam"
+matdef:
+  Be-9: 1.0
+beam_energy: 5.0
+```
+
+**Homogeneous** — uniform mixture of alpha emitters and targets:
+
+```yaml
+name: "Homogeneous Source"
+calc_type: "homogeneous"
+matdef:
+  Pu-239: 0.3
+  Pu-238: 0.2
+  Be-9: 0.5
+```
+
+**Interface** — planar interface between source and target regions:
+
+```yaml
+name: "Interface Geometry"
+calc_type: "interface"
+source_matdef:
+  Pu-238: 1.0
+source_density: 19.8
+target_matdef:
+  Be-9: 1.0
+```
+
+**Sandwich** — multi-layer geometry with intermediate layers:
+
+```yaml
+name: "Multi-Layer Sandwich"
+calc_type: "sandwich"
+source_matdef:
+  Pu-238: 1.0
+source_density: 19.8
+target_matdef:
+  Be-9: 1.0
+intermediate_layers:
+  - matdef: { C-13: 1.0 }
+    density: 2.26
+    thickness: 1.0e-4
+  - matdef: { Al-27: 1.0 }
+    density: 2.70
+    thickness: 1.0e-4
+```
 
 ### Python API
 
