@@ -1,4 +1,4 @@
-# ALPHANSO: ALPHa Neutron SOurces
+# ALPHANSO: ALPHA Neutron SOurces
 
 Open-source Python package for modeling ($\alpha$,n) neutron source terms.
 
