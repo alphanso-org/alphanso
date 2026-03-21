@@ -19,7 +19,7 @@ from urllib.error import URLError
 
 logger = logging.getLogger(__name__)
 
-DATA_VERSION = "1.0.0"
+DATA_VERSION = "1.1.0"
 
 _RELEASE_URL = (
     f"https://github.com/alphanso-org/alphanso/releases/download/"
@@ -27,7 +27,7 @@ _RELEASE_URL = (
 )
 
 # Filled after tarball creation (see release sequence in plan)
-_EXPECTED_SHA256 = "58add9be7e9795936dd21732d80732197f4818eba44d92a0b0f97b869226e488"
+_EXPECTED_SHA256 = "119430af676f7fecbb00661b861a0642d77dda7e74204ceefe8913b3cbb1af42"
 
 _REQUIRED_SUBDIRS = ["an_xs", "decay", "levels", "stopping"]
 
