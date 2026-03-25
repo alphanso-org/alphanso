@@ -50,8 +50,8 @@ def _build_range_table(energies, stops):
 def _reverse_spectrum_results(results: dict) -> dict:
     """Reverse spectrum arrays to output in increasing energy order."""
     spectrum_keys = ['an_spectrum', 'sf_spectrum', 'combined_spectrum',
-                     'an_spectrum_absolute', 'gamma_spectrum', 'gamma_spectrum_absolute']
-    bin_keys = ['neutron_energy_bins', 'spectrum_energy_bins', 'gamma_energy_bins']
+                     'an_spectrum_absolute']
+    bin_keys = ['neutron_energy_bins', 'spectrum_energy_bins']
 
     for key in spectrum_keys:
         if key in results and results[key] is not None:
@@ -65,12 +65,6 @@ def _reverse_spectrum_results(results: dict) -> dict:
         results['spectrum_layers'] = [
             s[::-1] if s is not None else None
             for s in results['spectrum_layers']
-        ]
-
-    if 'gamma_spectrum_layers' in results and results['gamma_spectrum_layers'] is not None:
-        results['gamma_spectrum_layers'] = [
-            gs[::-1] if gs is not None else None
-            for gs in results['gamma_spectrum_layers']
         ]
 
     return results
@@ -147,7 +141,6 @@ class Transport(object):
                 - neutron_energy_bins: ndarray, optional - Neutron energy grid
                 - an_xs_data_dir, stopping_power_data_dir: str, optional
                 - calculate_gammas: bool, optional - Enable gamma calculation (default: True)
-                - gamma_energy_bins: ndarray, optional - Gamma energy bins (default: 0-10 MeV, 50 keV bins)
                 - gamma_data_dir: str, optional - Gamma cascade data directory
 
         Returns:
@@ -158,8 +151,6 @@ class Transport(object):
                 - neutron_energy_bins: list - Energy bin edges
                 - gamma_yield: float, optional - Gammas per incident alpha (if calculate_gammas=True)
                 - gamma_lines: list, optional - Discrete gamma lines
-                - gamma_spectrum: list, optional - Binned gamma spectrum
-                - gamma_energy_bins: list, optional
 
         Raises:
             ValueError: If neither 'beam_energy' nor 'beam_intensities' is specified
@@ -175,13 +166,7 @@ class Transport(object):
         stopping_power_data_dir = config.get('stopping_power_data_dir')
 
         calculate_gammas = config.get('calculate_gammas', True)
-        gamma_energy_bins = config.get('gamma_energy_bins')
         gamma_data_dir = config.get('gamma_data_dir')
-
-        if calculate_gammas and gamma_energy_bins is None:
-            gamma_energy_bins = np.linspace(0.0, 10.0, 201)
-        elif not calculate_gammas:
-            gamma_energy_bins = None
 
         if 'beam_intensities' in config:
             energies = config['beam_intensities']
@@ -201,7 +186,7 @@ class Transport(object):
             neutron_energy_bins=neutron_energy_bins,
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
-            gamma_energy_bins=gamma_energy_bins,
+            calculate_gammas=calculate_gammas,
             gamma_data_dir=gamma_data_dir
         )
 
@@ -223,12 +208,6 @@ class Transport(object):
         if calculate_gammas and 'gamma_yield' in beam_results:
             results['gamma_yield'] = float(beam_results['gamma_yield'])
             results['gamma_lines'] = beam_results['gamma_lines']
-            if beam_results['gamma_spectrum'] is not None:
-                gamma_spectrum = beam_results['gamma_spectrum']
-                gamma_yield = beam_results['gamma_yield']
-                results['gamma_spectrum'] = gamma_spectrum.tolist()
-                results['gamma_spectrum_absolute'] = (gamma_spectrum * gamma_yield).tolist() if gamma_yield > 0 else gamma_spectrum.tolist()
-                results['gamma_energy_bins'] = beam_results['gamma_energy_bins'].tolist()
 
         return results
 
@@ -264,13 +243,7 @@ class Transport(object):
         decay_data_dir = config.get('decay_data_dir')
 
         calculate_gammas = config.get('calculate_gammas', True)
-        gamma_energy_bins = config.get('gamma_energy_bins')
         gamma_data_dir = config.get('gamma_data_dir')
-
-        if calculate_gammas and gamma_energy_bins is None:
-            gamma_energy_bins = np.linspace(0.0, 10.0, 201)
-        elif not calculate_gammas:
-            gamma_energy_bins = None
 
         result = Transport.homogeneous_problem(
             matdef,
@@ -282,7 +255,7 @@ class Transport(object):
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
             decay_data_dir=decay_data_dir,
-            gamma_energy_bins=gamma_energy_bins,
+            calculate_gammas=calculate_gammas,
             gamma_data_dir=gamma_data_dir
         )
 
@@ -300,8 +273,7 @@ class Transport(object):
             product_mass,
             target_mass_amu,
             ep_branching,
-            gamma_cascades=None,
-            gamma_energy_bins=None):
+            gamma_cascades=None):
         """
         Calculate neutron yield and energy spectrum from alpha slowing down in target.
 
@@ -317,10 +289,9 @@ class Transport(object):
             target_mass_amu: float - Target nucleus mass (amu)
             ep_branching: list - Alpha energy grid for branching ratio interpolation
             gamma_cascades: dict, optional - Gamma cascade data {level_idx: [(final, E_gamma, prob), ...]}
-            gamma_energy_bins: ndarray, optional - Energy bins for gamma spectrum
 
         Returns:
-            tuple - (an_yield: float, spectrum: ndarray, gamma_yield: float, gamma_lines: list, gamma_spectrum: ndarray)
+            tuple - (an_yield: float, spectrum: ndarray, gamma_yield: float, gamma_lines: list)
         """
 
         nng = len(neutron_energy_bins) - 1
@@ -353,7 +324,7 @@ class Transport(object):
         valid_mask = (sp_grid > 1e-30) & (cs_cm2_grid > 0)
 
         if not np.any(valid_mask):
-            return 0.0, spectrum, 0.0, [], None
+            return 0.0, spectrum, 0.0, []
 
         e_steps_valid = e_alpha_steps[valid_mask]
         de_valid = de[valid_mask]
@@ -425,7 +396,7 @@ class Transport(object):
         width_matrix[width_matrix <= 0] = 1e-30
 
         if not np.any(valid_physics):
-            return 0.0, spectrum, 0.0, [], None
+            return 0.0, spectrum, 0.0, []
 
         y_flat = yield_matrix[valid_physics]
         w_flat = width_matrix[valid_physics]
@@ -438,19 +409,18 @@ class Transport(object):
 
         spectrum = _accumulate_spectrum(b_lo, b_hi, y_flat, w_flat, enmin_flat, enmax_flat)
 
-        if gamma_cascades is not None and gamma_energy_bins is not None:
-            gamma_yield, gamma_lines, gamma_spectrum = Transport._calculate_gamma_spectrum(
+        if gamma_cascades is not None:
+            gamma_yield, gamma_lines = Transport._calculate_gamma_spectrum(
                 yield_matrix,
                 valid_physics,
                 energy_levels,
                 gamma_cascades,
-                gamma_energy_bins
             )
         else:
-            gamma_yield, gamma_lines, gamma_spectrum = 0.0, [], None
+            gamma_yield, gamma_lines = 0.0, []
 
         return (np.sum(spectrum), spectrum,
-                gamma_yield, gamma_lines, gamma_spectrum)
+                gamma_yield, gamma_lines)
 
     @staticmethod
     def _calculate_gamma_spectrum(
@@ -458,10 +428,9 @@ class Transport(object):
         valid_physics: np.ndarray,
         energy_levels: list,
         gamma_cascades: dict,
-        gamma_energy_bins: np.ndarray
     ):
         """
-        Calculate gamma ray yield and spectrum from nuclear de-excitation.
+        Calculate gamma ray yield and lines from nuclear de-excitation.
 
         This method computes gamma ray production from excited nuclear levels populated
         by (alpha,n) reactions. Each populated level de-excites by emitting gamma rays
@@ -473,13 +442,11 @@ class Transport(object):
             valid_physics: ndarray - Boolean mask for physically allowed transitions [alpha_steps, levels]
             energy_levels: list - Excited state energies in MeV, index corresponds to level
             gamma_cascades: dict - Gamma transition data {level_idx: [(final_idx, E_gamma, prob), ...]}
-            gamma_energy_bins: ndarray - Discrete energy bins for binned gamma spectrum output
 
         Returns:
-            tuple: (total_gamma_yield, gamma_lines, gamma_spectrum)
+            tuple: (total_gamma_yield, gamma_lines)
                 - total_gamma_yield: float - Total gamma ray production rate
                 - gamma_lines: list - [[energy_MeV, intensity], ...] sorted discrete gamma lines
-                - gamma_spectrum: ndarray - Binned histogram of gamma intensities
 
         Algorithm:
             1. Extract valid level populations from yield_matrix using valid_physics mask
@@ -488,17 +455,16 @@ class Transport(object):
                 - For each transition (i -> f, E_gamma, prob):
                     - Accumulate: gamma_intensity[E_gamma] += population[i] * prob
             3. Convert accumulated intensities to sorted line list
-            4. Bin discrete lines into histogram for spectrum output
         """
-        if gamma_cascades is None or gamma_energy_bins is None:
-            return 0.0, [], None
+        if gamma_cascades is None:
+            return 0.0, []
 
         gamma_lines_dict = defaultdict(float)
 
         valid_yields = yield_matrix[valid_physics]
 
         if len(valid_yields) == 0:
-            return 0.0, [], np.zeros(len(gamma_energy_bins) - 1)
+            return 0.0, []
 
         num_levels = len(energy_levels)
 
@@ -547,15 +513,7 @@ class Transport(object):
         gamma_lines = _gamma_line_pairs(sorted(gamma_lines_dict.items()))
         total_gamma_yield = sum(intensity for _, intensity in gamma_lines)
 
-        gamma_spectrum = np.zeros(len(gamma_energy_bins) - 1)
-
-        for energy, intensity in gamma_lines:
-            bin_idx = np.searchsorted(gamma_energy_bins, energy) - 1
-
-            if 0 <= bin_idx < len(gamma_spectrum):
-                gamma_spectrum[bin_idx] += intensity
-
-        return total_gamma_yield, gamma_lines, gamma_spectrum
+        return total_gamma_yield, gamma_lines
 
     @staticmethod
     def beam_problem(
@@ -568,7 +526,7 @@ class Transport(object):
             neutron_energy_bins=None,
             an_xs_data_dir=None,
             stopping_power_data_dir=None,
-            gamma_energy_bins=None,
+            calculate_gammas=False,
             gamma_data_dir=None):
         """
         Calculate neutron production from alpha beam incident on thick target.
@@ -583,7 +541,7 @@ class Transport(object):
             neutron_energy_bins: ndarray, optional - Neutron spectrum energy grid
             an_xs_data_dir: str, optional - (\alpha,n) cross section data directory
             stopping_power_data_dir: str, optional - Stopping power data directory
-            gamma_energy_bins: ndarray, optional - Gamma ray energy bins for spectrum (enables gamma calculation)
+            calculate_gammas: bool, optional - Enable gamma calculation (default: False)
             gamma_data_dir: str, optional - Directory containing gamma cascade data
 
         Returns:
@@ -591,10 +549,8 @@ class Transport(object):
                 - neutron_yield: float - Neutron yield per incident alpha
                 - neutron_spectrum: ndarray - Normalized neutron spectrum
                 - neutron_energy_bins: ndarray - Energy bins for neutrons
-                - gamma_yield: float - Gamma yield per incident alpha (if gamma_energy_bins provided)
+                - gamma_yield: float - Gamma yield per incident alpha (if calculate_gammas=True)
                 - gamma_lines: list - [[energy_MeV, intensity], ...] discrete gamma lines
-                - gamma_spectrum: ndarray - Binned gamma spectrum
-                - gamma_energy_bins: ndarray - Energy bins for gammas
         """
 
         if num_alpha_groups is None:
@@ -606,8 +562,6 @@ class Transport(object):
         ebins = np.linspace(min_alpha_energy, max_alpha_energy, num_alpha_groups + 1)
         if neutron_energy_bins is None:
             neutron_energy_bins = np.linspace(15.0, 0.0, 101)
-
-        calculate_gammas = gamma_energy_bins is not None
 
         mass_fractions, atom_fractions = matdef_to_zaids(matdef)
 
@@ -625,7 +579,6 @@ class Transport(object):
         if calculate_gammas:
             total_gamma_yield = 0.0
             total_gamma_lines = defaultdict(float)
-            total_gamma_spectrum = np.zeros(len(gamma_energy_bins) - 1)
 
         target_data_list = []
         for zaid, afrac in atom_fractions.items():
@@ -710,7 +663,7 @@ class Transport(object):
                 return None
 
             scale = t_data['afrac'] * intensity
-            p, spectrum, gamma_y, gamma_lines, gamma_spec = Transport._integrate_over_ebins(
+            p, spectrum, gamma_y, gamma_lines = Transport._integrate_over_ebins(
                 e,
                 neutron_energy_bins,
                 t_data['an_xs_binned'],
@@ -722,7 +675,6 @@ class Transport(object):
                 t_data['target_mass_amu'],
                 t_data['energy_keys'],
                 gamma_cascades=t_data['gamma_cascades'] if calculate_gammas else None,
-                gamma_energy_bins=gamma_energy_bins
             )
             return {
                 'p': p * scale,
@@ -731,7 +683,6 @@ class Transport(object):
                 'gamma_lines': _gamma_line_pairs(
                     (eg, ig * scale) for eg, ig in gamma_lines
                 ),
-                'gamma_spec': gamma_spec * scale if gamma_spec is not None else None,
             }
 
         futures = []
@@ -752,8 +703,6 @@ class Transport(object):
             total_spectrum += result['spectrum']
             if calculate_gammas:
                 total_gamma_yield += result['gamma_y']
-                if result['gamma_spec'] is not None:
-                    total_gamma_spectrum += result['gamma_spec']
                 for eg, ig in result['gamma_lines']:
                     total_gamma_lines[eg] += ig
 
@@ -771,8 +720,6 @@ class Transport(object):
         if calculate_gammas:
             results['gamma_yield'] = total_gamma_yield
             results['gamma_lines'] = _gamma_line_pairs(sorted(total_gamma_lines.items()))
-            results['gamma_spectrum'] = total_gamma_spectrum
-            results['gamma_energy_bins'] = gamma_energy_bins
 
         return results
 
@@ -787,7 +734,7 @@ class Transport(object):
             an_xs_data_dir=None,
             stopping_power_data_dir=None,
             decay_data_dir=None,
-            gamma_energy_bins=None,
+            calculate_gammas=False,
             gamma_data_dir=None):
         """
         Calculate neutron production from uniform mixture of alpha emitters in target material.
@@ -802,6 +749,8 @@ class Transport(object):
             an_xs_data_dir: str, optional - (alpha,n) cross section data directory
             stopping_power_data_dir: str, optional - Stopping power data directory
             decay_data_dir: str, optional - Decay spectrum data directory
+            calculate_gammas: bool, optional - Enable gamma calculation (default: False)
+            gamma_data_dir: str, optional - Directory containing gamma cascade data
 
         Returns:
             dict - Complete results including (alpha,n) and SF contributions:
@@ -850,7 +799,7 @@ class Transport(object):
             max_alpha_energy=max_alpha_energy,
             neutron_energy_bins=neutron_energy_bins,
             an_xs_data_dir=an_xs_data_dir, stopping_power_data_dir=stopping_power_data_dir,
-            gamma_energy_bins=gamma_energy_bins,
+            calculate_gammas=calculate_gammas,
             gamma_data_dir=gamma_data_dir)
 
         p_total_an = beam_results['neutron_yield']
@@ -859,8 +808,6 @@ class Transport(object):
 
         gamma_yield_an = beam_results.get('gamma_yield', 0.0)
         gamma_lines_an = beam_results.get('gamma_lines', [])
-        gamma_spectrum_an = beam_results.get('gamma_spectrum')
-        gamma_energy_bins_result = beam_results.get('gamma_energy_bins')
 
         p_total_sf = 0.0
         spectrum_sf = np.zeros(len(neutron_energy_bins) - 1)
@@ -990,14 +937,9 @@ class Transport(object):
             'average_energy': avg_energy_total,
         }
 
-        if gamma_energy_bins is not None:
+        if calculate_gammas:
             result['gamma_yield'] = float(gamma_yield_an)
             result['gamma_lines'] = gamma_lines_an
-            if gamma_spectrum_an is not None:
-                result['gamma_spectrum'] = gamma_spectrum_an.tolist() if isinstance(
-                    gamma_spectrum_an, np.ndarray) else gamma_spectrum_an
-                result['gamma_energy_bins'] = gamma_energy_bins_result.tolist() if isinstance(
-                    gamma_energy_bins_result, np.ndarray) else gamma_energy_bins_result
 
         if sf_contributors:
             result['sf_contributors'] = sf_contributors
@@ -1425,13 +1367,7 @@ class Transport(object):
         source_density = config.get('source_density')
 
         calculate_gammas = config.get('calculate_gammas', True)
-        gamma_energy_bins = config.get('gamma_energy_bins')
         gamma_data_dir = config.get('gamma_data_dir')
-
-        if calculate_gammas and gamma_energy_bins is None:
-            gamma_energy_bins = np.linspace(0.0, 10.0, 201)
-        elif not calculate_gammas:
-            gamma_energy_bins = None
 
         interface_spectrum = Transport.interface_alpha_term(
             source_matdef=source_matdef,
@@ -1451,7 +1387,7 @@ class Transport(object):
             neutron_energy_bins=neutron_energy_bins,
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
-            gamma_energy_bins=gamma_energy_bins,
+            calculate_gammas=calculate_gammas,
             gamma_data_dir=gamma_data_dir
         )
 
@@ -1473,12 +1409,6 @@ class Transport(object):
         if calculate_gammas and 'gamma_yield' in beam_results:
             results['gamma_yield'] = float(beam_results['gamma_yield'])
             results['gamma_lines'] = beam_results['gamma_lines']
-            if beam_results['gamma_spectrum'] is not None:
-                gamma_spectrum = beam_results['gamma_spectrum']
-                gamma_yield = beam_results['gamma_yield']
-                results['gamma_spectrum'] = gamma_spectrum.tolist()
-                results['gamma_spectrum_absolute'] = (gamma_spectrum * gamma_yield).tolist() if gamma_yield > 0 else gamma_spectrum.tolist()
-                results['gamma_energy_bins'] = beam_results['gamma_energy_bins'].tolist()
 
         return results
 
@@ -1822,13 +1752,7 @@ class Transport(object):
         neutron_energy_bins = config.get('neutron_energy_bins')
 
         calculate_gammas = config.get('calculate_gammas', True)
-        gamma_energy_bins = config.get('gamma_energy_bins')
         gamma_data_dir = config.get('gamma_data_dir')
-
-        if calculate_gammas and gamma_energy_bins is None:
-            gamma_energy_bins = np.linspace(0.0, 10.0, 201)
-        elif not calculate_gammas:
-            gamma_energy_bins = None
 
         num_alpha_groups = config.get('num_alpha_groups', 15000)
         min_alpha_energy = config.get('min_alpha_energy', 1e-11)
@@ -1874,7 +1798,7 @@ class Transport(object):
             neutron_energy_bins=neutron_energy_bins,
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
-            gamma_energy_bins=gamma_energy_bins,
+            calculate_gammas=calculate_gammas,
             gamma_data_dir=gamma_data_dir
         )
         yield_ab_b = results_ab_b['neutron_yield']
@@ -1882,7 +1806,6 @@ class Transport(object):
         en_bins = results_ab_b['neutron_energy_bins']
         gamma_yield_ab_b = results_ab_b.get('gamma_yield', 0.0)
         gamma_lines_ab_b = results_ab_b.get('gamma_lines', [])
-        gamma_spectrum_ab_b = results_ab_b.get('gamma_spectrum')
 
         results_bc_b = Transport.beam_problem(
             bc_alpha_list, last_layer['matdef'],
@@ -1892,14 +1815,13 @@ class Transport(object):
             neutron_energy_bins=neutron_energy_bins,
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
-            gamma_energy_bins=gamma_energy_bins,
+            calculate_gammas=calculate_gammas,
             gamma_data_dir=gamma_data_dir
         )
         yield_bc_b = results_bc_b['neutron_yield']
         spectrum_bc_b = results_bc_b['neutron_spectrum']
         gamma_yield_bc_b = results_bc_b.get('gamma_yield', 0.0)
         gamma_lines_bc_b = results_bc_b.get('gamma_lines', [])
-        gamma_spectrum_bc_b = results_bc_b.get('gamma_spectrum')
 
         results_bc_c = Transport.beam_problem(
             bc_alpha_list, target_matdef,
@@ -1909,19 +1831,17 @@ class Transport(object):
             neutron_energy_bins=neutron_energy_bins,
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
-            gamma_energy_bins=gamma_energy_bins,
+            calculate_gammas=calculate_gammas,
             gamma_data_dir=gamma_data_dir
         )
         yield_bc_c = results_bc_c['neutron_yield']
         spectrum_bc_c = results_bc_c['neutron_spectrum']
         gamma_yield_bc_c = results_bc_c.get('gamma_yield', 0.0)
         gamma_lines_bc_c = results_bc_c.get('gamma_lines', [])
-        gamma_spectrum_bc_c = results_bc_c.get('gamma_spectrum')
 
         yield_per_layer = []
         spectrum_per_layer = []
         gamma_yield_per_layer = []
-        gamma_spectrum_per_layer = []
         gamma_lines_per_layer = []
 
         for i in range(len(intermediate_layers)):
@@ -1931,7 +1851,6 @@ class Transport(object):
                 yield_entering = yield_ab_b
                 spectrum_entering = spectrum_ab_b
                 gamma_yield_entering = gamma_yield_ab_b
-                gamma_spectrum_entering = gamma_spectrum_ab_b
                 gamma_lines_entering = gamma_lines_ab_b
             else:
                 entering_alpha_dict = Transport._calculate_bc_spectrum_volumetric(
@@ -1954,20 +1873,18 @@ class Transport(object):
                     neutron_energy_bins=neutron_energy_bins,
                     an_xs_data_dir=an_xs_data_dir,
                     stopping_power_data_dir=stopping_power_data_dir,
-                    gamma_energy_bins=gamma_energy_bins,
+                    calculate_gammas=calculate_gammas,
                     gamma_data_dir=gamma_data_dir
                 )
                 yield_entering = results_entering['neutron_yield']
                 spectrum_entering = results_entering['neutron_spectrum']
                 gamma_yield_entering = results_entering.get('gamma_yield', 0.0)
-                gamma_spectrum_entering = results_entering.get('gamma_spectrum')
                 gamma_lines_entering = results_entering.get('gamma_lines', [])
 
             if i == len(intermediate_layers) - 1:
                 yield_exiting = yield_bc_b
                 spectrum_exiting = spectrum_bc_b
                 gamma_yield_exiting = gamma_yield_bc_b
-                gamma_spectrum_exiting = gamma_spectrum_bc_b
                 gamma_lines_exiting = gamma_lines_bc_b
             else:
                 exiting_alpha_dict = Transport._calculate_bc_spectrum_volumetric(
@@ -1990,13 +1907,12 @@ class Transport(object):
                     neutron_energy_bins=neutron_energy_bins,
                     an_xs_data_dir=an_xs_data_dir,
                     stopping_power_data_dir=stopping_power_data_dir,
-                    gamma_energy_bins=gamma_energy_bins,
+                    calculate_gammas=calculate_gammas,
                     gamma_data_dir=gamma_data_dir
                 )
                 yield_exiting = results_exiting['neutron_yield']
                 spectrum_exiting = results_exiting['neutron_spectrum']
                 gamma_yield_exiting = results_exiting.get('gamma_yield', 0.0)
-                gamma_spectrum_exiting = results_exiting.get('gamma_spectrum')
                 gamma_lines_exiting = results_exiting.get('gamma_lines', [])
 
             net_yield_in_layer = yield_entering - yield_exiting
@@ -2012,14 +1928,6 @@ class Transport(object):
 
             net_gamma_yield = gamma_yield_entering - gamma_yield_exiting
             gamma_yield_per_layer.append(net_gamma_yield)
-
-            if gamma_spectrum_entering is not None and gamma_spectrum_exiting is not None:
-                abs_gamma_entering = gamma_spectrum_entering * gamma_yield_entering
-                abs_gamma_exiting = gamma_spectrum_exiting * gamma_yield_exiting
-                net_gamma_spectrum = abs_gamma_entering - abs_gamma_exiting
-                gamma_spectrum_per_layer.append(net_gamma_spectrum)
-            else:
-                gamma_spectrum_per_layer.append(None)
 
             dict_entering = dict(gamma_lines_entering)
             dict_exiting = dict(gamma_lines_exiting)
@@ -2049,24 +1957,9 @@ class Transport(object):
             normalized_spectrum = total_spectrum / np.sum(total_spectrum)
 
         gamma_yield_total = None
-        total_gamma_spectrum = None
-        normalized_gamma_spectrum = None
 
         if calculate_gammas:
             gamma_yield_total = gamma_yield_bc_c + sum(gamma_yield_per_layer)
-
-            if gamma_spectrum_bc_c is not None:
-                total_gamma_spectrum = gamma_spectrum_bc_c * gamma_yield_bc_c  # Convert to absolute
-
-            for gs in gamma_spectrum_per_layer:
-                if gs is not None:
-                    if total_gamma_spectrum is None:
-                        total_gamma_spectrum = gs.copy()
-                    else:
-                        total_gamma_spectrum += gs
-
-            if total_gamma_spectrum is not None and np.sum(total_gamma_spectrum) > 0:
-                normalized_gamma_spectrum = total_gamma_spectrum / np.sum(total_gamma_spectrum)
 
         results = {
             'an_yield': float(an_yield),
@@ -2098,14 +1991,6 @@ class Transport(object):
                     final_lines_dict[e] += i
 
             results['gamma_lines'] = _gamma_line_pairs(sorted(final_lines_dict.items()))
-
-            if normalized_gamma_spectrum is not None:
-                results['gamma_spectrum'] = normalized_gamma_spectrum.tolist()
-                results['gamma_spectrum_absolute'] = total_gamma_spectrum.tolist()
-                results['gamma_energy_bins'] = gamma_energy_bins.tolist() if isinstance(
-                    gamma_energy_bins, np.ndarray) else gamma_energy_bins
-                results['gamma_spectrum_layers'] = [
-                    gs.tolist() if gs is not None else None for gs in gamma_spectrum_per_layer]
 
         return results
 
