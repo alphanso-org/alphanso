@@ -17,6 +17,7 @@ from .parsers import (
     get_stopping_power,
     get_gamma_cascade_info)
 from .data_manager import ensure_data
+from .output_files import write_results_yaml
 from .utils import rebin_xs, get_composite_stopping, matdef_to_zaids, rebin_endf_spectrum
 
 logger = logging.getLogger(__name__)
@@ -119,19 +120,7 @@ class Transport(object):
         output_dir = config.get('output_dir')
         save_data_files = config.get('save_data_files', True)
         if output_dir and save_data_files:
-            import yaml
-            from pathlib import Path
-            output_path = Path(output_dir)
-            output_path.mkdir(parents=True, exist_ok=True)
-
-            output_data = {k: v for k, v in config.items()
-                          if k not in ('save_data_files',)}
-            output_data['_result'] = results
-            with open(output_path / 'output.yaml', 'w') as f:
-                yaml.dump(output_data, f, default_flow_style=True, indent=2)
-
-            with open(output_path / 'results.yaml', 'w') as f:
-                yaml.dump(results, f, default_flow_style=True, indent=2)
+            write_results_yaml(results, output_dir)
 
         return results
 

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Dict, List, Union, Any
 from collections import defaultdict
 
+from .output_files import write_results_yaml
 from .transport import Transport
 from .data_manager import ensure_data, get_data_info
 
@@ -152,32 +153,15 @@ def read_out(configs: List[Dict[str, Any]],
         source_dir.mkdir(exist_ok=True)
 
         if len(config_list) == 1:
-            output_file = source_dir / "output.yaml"
-            with open(output_file, 'w') as f:
-                yaml.dump(config_list[0], f, default_flow_style=True, indent=2)
-
             if '_result' in config_list[0]:
-                results_file = source_dir / "results.yaml"
-                with open(results_file, 'w') as f:
-                    yaml.dump(
-                        config_list[0]['_result'],
-                        f,
-                        default_flow_style=True,
-                        indent=2)
+                write_results_yaml(config_list[0]['_result'], source_dir)
         else:
             for i, config in enumerate(config_list):
-                output_file = source_dir / f"output_{i+1}.yaml"
-                with open(output_file, 'w') as f:
-                    yaml.dump(config, f, default_flow_style=True, indent=2)
-
                 if '_result' in config:
-                    results_file = source_dir / f"results_{i+1}.yaml"
-                    with open(results_file, 'w') as f:
-                        yaml.dump(
-                            config['_result'],
-                            f,
-                            default_flow_style=True,
-                            indent=2)
+                    write_results_yaml(
+                        config['_result'],
+                        source_dir,
+                        filename=f"results_{i+1}.yaml")
 
     print(f"Created output directory structure: {output_dir}")
     return output_dir
