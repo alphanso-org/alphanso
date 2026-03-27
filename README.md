@@ -143,7 +143,7 @@ print(f"Neutron yield: {results['an_yield']:.3e} n/alpha")
 `Transport.calculate()` accepts optional keys in the config dict:
 
 - `name` (str): Label for identification in CLI output
-- `output_dir` (str): Directory to save output files. When specified, saves `output.yaml` (full config + results) and `results.yaml` (results only).
+- `output_dir` (str): Directory to save `results.yaml`.
 - `save_data_files` (bool, default: `True`): Whether to save output files when `output_dir` is specified. Set to `False` to skip file saving.
 
 ## Running Tests
@@ -313,10 +313,7 @@ Mass fractions should sum to 1.0 for single-phase materials, but can exceed 1.0 
 
 ## Output Files
 
-When using the CLI, results are saved to `alphanso_output/<config_name>/`:
-
-- **`output.yaml`**: Complete input configuration and full results (for reproducibility)
-- **`results.yaml`**: Clean results-only output (for easy parsing)
+When using the CLI, results are saved to `alphanso_output/<config_name>/` as `results.yaml`.
 
 ## Custom Data Sources
 
