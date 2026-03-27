@@ -6,10 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-03-27
+
 ### Changed
 
 - Unified CLI and Python file output around `results.yaml`
 - Removed the duplicate `output.yaml` artifact
+- Updated citation with arXiv preprint link ([arXiv:2603.17719](https://arxiv.org/abs/2603.17719))
 
 ## [1.0.0] - 2026-03-11
 

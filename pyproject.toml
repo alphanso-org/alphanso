@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alphanso"
-version = "1.0.0"
+version = "1.0.1"
 description = "Alpha-neutron source calculation package"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -44,3 +44,4 @@ alphanso = ["data/atomic_data/*", "data/sources_overrides.yaml"]
 [project.urls]
 Repository = "https://github.com/alphanso-org/alphanso"
 Issues = "https://github.com/alphanso-org/alphanso/issues"
+Paper = "https://arxiv.org/abs/2603.17719"
