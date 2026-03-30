@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Removed `numba` dependency; replaced `@njit`-decorated loops with vectorized NumPy operations
 - Unified CLI and Python file output around `results.yaml`
 - Removed the duplicate `output.yaml` artifact
 - Updated citation with arXiv preprint link ([arXiv:2603.17719](https://arxiv.org/abs/2603.17719))
