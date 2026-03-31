@@ -181,7 +181,6 @@ def get_an_xs(
     found_path = _find_gnds_xml(zaid, data_dir)
 
     if found_path is None and data_dir is not None:
-        # TENDL directories may use non-standard filenames; fall back to a directory scan.
         try:
             data_dir_str = str(data_dir).lower()
         except (TypeError, AttributeError):
@@ -204,7 +203,6 @@ def get_an_xs(
             except (TypeError, AttributeError):
                 data_dir_str = str(data_dir)
             if "tendl-" not in data_dir_str and "tendl" not in data_dir_str and "endf" not in data_dir_str:
-                # Plain data_dir: attempt parse directly (may raise if missing).
                 return _get_an_xs_xml(os.path.join(data_dir, f"{zaid}.xml"))
         return None
 

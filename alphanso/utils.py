@@ -274,7 +274,6 @@ def _preprocess_continuum_dist(
         t = max(0.0, min(t, 1.0))
         f_blend = f_lo_interp + t * (f_hi_interp - f_lo_interp)
 
-        # Build CDF of f_blend over merged_e, then vectorize bin integration.
         cdf = np.zeros(len(merged_e))
         cdf[1:] = np.cumsum(
             0.5 * (f_blend[:-1] + f_blend[1:]) * np.diff(merged_e)
