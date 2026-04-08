@@ -9,6 +9,7 @@ from collections import defaultdict
 from typing import Optional, Dict, Tuple, List
 from scipy.interpolate import interp1d
 
+from .data_manager import get_data_dir
 from .sources_parsers import (
     get_sources_an_xs,
     get_sources_stopping_power,
@@ -940,6 +941,40 @@ def _load_sf_data_from_yaml(zaid: int,
     except Exception as e:
         logger.debug(f"Could not load SF data from YAML for ZAID {zaid}: {e}")
         return {}
+
+
+def load_delayed_neutron_data(zaid: int) -> dict:
+    """
+    Load delayed neutron yield and spectrum for a nuclide from the bundled library.
+
+    Args:
+        zaid: ZAID identifier (ZZZAAA format)
+
+    Returns:
+        {'nu_delayed', 'average_energy_MeV', 'energy_grid_MeV', 'spectrum_per_MeV'}:
+            Delayed neutron yield and 200-bin spectrum (0-10 MeV),
+        {}: If the nuclide is outside Z=89-106 or has no data file.
+    """
+    z = zaid // 1000
+    a = zaid % 1000
+    if z < 89 or z > 106:
+        return {}
+    yaml_path = get_data_dir() / "delayed_neutron" / "spectra" / f"dn_spectrum_{z}_{a}_sf.yaml"
+    if not yaml_path.exists():
+        logger.warning(f"ZAID {zaid}: No delayed neutron data at {yaml_path}")
+        return {}
+    with open(yaml_path) as f:
+        data = yaml.safe_load(f)
+    required = ('nu_delayed', 'energy_MeV', 'spectrum_per_MeV')
+    if not all(k in data for k in required):
+        logger.warning(f"ZAID {zaid}: Delayed neutron YAML missing required keys")
+        return {}
+    return {
+        'nu_delayed':         float(data['nu_delayed']),
+        'average_energy_MeV': float(data.get('average_energy_MeV', 0.0)),
+        'energy_grid_MeV':    list(data['energy_MeV']),
+        'spectrum_per_MeV':   list(data['spectrum_per_MeV']),
+    }
 
 
 def _parse_endf_sf_data(filepath: str, zaid: int,

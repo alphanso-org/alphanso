@@ -50,3 +50,9 @@ class TestHomogeneousCalculations:
         full_message = f"\n{name} comparison results:\n" + "\n".join(f"  {m}" for m in messages)
 
         assert passed, full_message
+
+        assert 'delayedn_strength' in actual
+        assert isinstance(actual['delayedn_strength'], float)
+        assert actual['delayedn_strength'] >= 0.0
+        assert 'delayedn_spectrum' in actual
+        assert len(actual['delayedn_spectrum']) == len(actual['neutron_energy_bins']) - 1

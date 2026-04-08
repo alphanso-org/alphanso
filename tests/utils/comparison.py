@@ -168,6 +168,18 @@ def compare_results(actual: dict, expected: dict, calc_type: str) -> Tuple[bool,
                 messages.append(msg)
                 all_passed &= passed
 
+        for field in ['delayedn_strength']:
+            if field in expected:
+                passed, msg = compare_scalar(actual.get(field), expected.get(field), name=field)
+                messages.append(msg)
+                all_passed &= passed
+
+        for field in ['delayedn_spectrum']:
+            if field in expected:
+                passed, msg = compare_spectrum(actual.get(field), expected.get(field), name=field)
+                messages.append(msg)
+                all_passed &= passed
+
     # Sandwich-specific fields
     if calc_type == 'sandwich':
         for field in ['yield_target', 'yield_ab_b', 'yield_bc_b', 'yield_bc_c']:

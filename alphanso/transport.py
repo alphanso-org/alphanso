@@ -14,7 +14,8 @@ from .parsers import (
     get_continuum_info,
     get_decay_spectrum,
     get_stopping_power,
-    get_gamma_cascade_info)
+    get_gamma_cascade_info,
+    load_delayed_neutron_data)
 from .data_manager import ensure_data
 from .output_files import normalize_results_payload, write_results_yaml
 from .utils import (
@@ -48,7 +49,7 @@ def _build_range_table(energies, stops):
 def _reverse_spectrum_results(results: dict) -> dict:
     """Reverse spectrum arrays to output in increasing energy order."""
     spectrum_keys = ['an_spectrum', 'sf_spectrum', 'combined_spectrum',
-                     'an_spectrum_absolute']
+                     'an_spectrum_absolute', 'delayedn_spectrum']
     bin_keys = ['neutron_energy_bins', 'spectrum_energy_bins']
 
     for key in spectrum_keys:
@@ -848,6 +849,8 @@ class Transport(object):
         p_total_sf = 0.0
         spectrum_sf = np.zeros(len(neutron_energy_bins) - 1)
         sf_contributors = []
+        p_total_delayedn = 0.0
+        spectrum_delayedn = np.zeros(len(neutron_energy_bins) - 1)
 
         for zaid, wtfrac in mass_fractions.items():
             atomic_mass = atomic_data.get_atomic_mass(zaid)
@@ -902,6 +905,30 @@ class Transport(object):
                 'watt_b': float(watt_b),
                 'endf_avg_energy': float(endf_avg_energy)
             })
+
+            dn_data = load_delayed_neutron_data(zaid)
+            if dn_data and nubar > 0.0:
+                nu_delayed = dn_data['nu_delayed']
+                fission_rate = sf_yield_nuclide / nubar
+                delayedn_yield_nuclide = fission_rate * nu_delayed
+                p_total_delayedn += delayedn_yield_nuclide
+                dn_tuples = [
+                    (e, s * 0.05)
+                    for e, s in zip(dn_data['energy_grid_MeV'], dn_data['spectrum_per_MeV'])
+                ]
+                spectrum_delayedn += delayedn_yield_nuclide * rebin_endf_spectrum(
+                    dn_tuples, neutron_energy_bins
+                )
+                sf_contributors[-1]['nu_delayed']     = float(nu_delayed)
+                sf_contributors[-1]['delayedn_yield'] = float(delayedn_yield_nuclide)
+            else:
+                sf_contributors[-1]['nu_delayed']     = 0.0
+                sf_contributors[-1]['delayedn_yield'] = 0.0
+
+        if np.sum(spectrum_delayedn) > 0:
+            spectrum_delayedn_normalized = spectrum_delayedn / np.sum(spectrum_delayedn)
+        else:
+            spectrum_delayedn_normalized = spectrum_delayedn
 
         if np.sum(spectrum_sf) > 0:
             spectrum_sf_normalized = spectrum_sf / np.sum(spectrum_sf)
@@ -979,6 +1006,9 @@ class Transport(object):
 
         if sf_contributors:
             result['sf_contributors'] = sf_contributors
+
+        result['delayedn_strength'] = float(p_total_delayedn)
+        result['delayedn_spectrum'] = spectrum_delayedn_normalized.tolist()
 
         return result
 
