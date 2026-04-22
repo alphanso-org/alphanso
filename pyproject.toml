@@ -38,7 +38,7 @@ where = ["."]
 exclude = ["tests*", "example_usage*"]
 
 [tool.setuptools.package-data]
-alphanso = ["data/atomic_data/*", "data/sources_overrides.yaml"]
+alphanso = ["data/atomic_data/*", "data/data_overrides.yaml"]
 
 [project.urls]
 Repository = "https://github.com/alphanso-org/alphanso"
