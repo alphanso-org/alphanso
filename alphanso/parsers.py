@@ -26,49 +26,58 @@ logger = logging.getLogger(__name__)
 def _default_data_root():
     return str(get_data_dir())
 
-def _load_sources_overrides():
-    """Load the sources_overrides.yaml configuration file."""
+def _load_data_overrides():
+    """Load the data_overrides.yaml configuration file."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    overrides_path = os.path.join(current_dir, "data", "sources_overrides.yaml")
+    overrides_path = os.path.join(current_dir, "data", "data_overrides.yaml")
 
     if os.path.exists(overrides_path):
         try:
             with open(overrides_path, 'r') as f:
                 return yaml.safe_load(f)
         except Exception as e:
-            logger.warning(f"Failed to load sources_overrides.yaml: {e}")
+            logger.warning(f"Failed to load data_overrides.yaml: {e}")
             return None
     return None
 
 
-_SOURCES_OVERRIDES = _load_sources_overrides()
+_DATA_OVERRIDES = _load_data_overrides()
 
 
 def _should_use_sources_for_an_xs(zaid: int) -> bool:
     """Check if a ZAID should use SOURCES data for (alpha,n) cross sections."""
-    if _SOURCES_OVERRIDES is None:
+    if _DATA_OVERRIDES is None:
         return False
 
-    use_sources_zaids = _SOURCES_OVERRIDES.get('an_xs', {}).get('use_sources_tape_zaids', [])
+    use_sources_zaids = _DATA_OVERRIDES.get('an_xs', {}).get('use_sources_tape_zaids', [])
     return zaid in use_sources_zaids
+
+
+def _should_use_tendl_for_an_xs(zaid: int) -> bool:
+    """Check if a ZAID should use TENDL instead of JENDL for (alpha,n) cross sections."""
+    if _DATA_OVERRIDES is None:
+        return False
+
+    use_tendl_zaids = _DATA_OVERRIDES.get('an_xs', {}).get('use_tendl_zaids', [])
+    return zaid in use_tendl_zaids
 
 
 def _should_use_sources_for_stopping(zaid: int) -> bool:
     """Check if a ZAID should use SOURCES data for stopping power."""
-    if _SOURCES_OVERRIDES is None:
+    if _DATA_OVERRIDES is None:
         return False
 
     z = zaid // 1000
-    default_z_threshold = _SOURCES_OVERRIDES.get('stopping', {}).get('default_sources_for_z_gt', 999)
+    default_z_threshold = _DATA_OVERRIDES.get('stopping', {}).get('default_sources_for_z_gt', 999)
     return z > default_z_threshold
 
 
 def _get_sources_an_xs_dir() -> Optional[str]:
     """Get the directory for SOURCES (alpha,n) cross section data."""
-    if _SOURCES_OVERRIDES is None:
+    if _DATA_OVERRIDES is None:
         return None
 
-    tape_path = _SOURCES_OVERRIDES.get('an_xs', {}).get('tape')
+    tape_path = _DATA_OVERRIDES.get('an_xs', {}).get('tape')
     if tape_path:
         return os.path.join(_default_data_root(), os.path.dirname(tape_path))
     return None
@@ -76,10 +85,10 @@ def _get_sources_an_xs_dir() -> Optional[str]:
 
 def _get_sources_stopping_dir() -> Optional[str]:
     """Get the directory for SOURCES stopping power data."""
-    if _SOURCES_OVERRIDES is None:
+    if _DATA_OVERRIDES is None:
         return None
 
-    tape_path = _SOURCES_OVERRIDES.get('stopping', {}).get('tape')
+    tape_path = _DATA_OVERRIDES.get('stopping', {}).get('tape')
     if tape_path:
         return os.path.join(_default_data_root(), os.path.dirname(tape_path))
     return None
@@ -113,11 +122,16 @@ def _find_gnds_xml(zaid: int, data_dir: Optional[os.PathLike]) -> Optional[str]:
 
     if data_dir is None:
         data_root = _default_data_root()
-        candidates = [
-            os.path.join(data_root, 'an_xs', "ENDF", _get_endf_filename(zaid)),
-            os.path.join(data_root, 'an_xs', "JENDL", f'{zaid}.xml'),
-            os.path.join(data_root, 'an_xs', "TENDL", f'{zaid}.xml'),
-        ]
+        if _should_use_tendl_for_an_xs(zaid):
+            candidates = [
+                os.path.join(data_root, 'an_xs', "TENDL", f'{zaid}.xml'),
+            ]
+        else:
+            candidates = [
+                os.path.join(data_root, 'an_xs', "ENDF", _get_endf_filename(zaid)),
+                os.path.join(data_root, 'an_xs', "JENDL", f'{zaid}.xml'),
+                os.path.join(data_root, 'an_xs', "TENDL", f'{zaid}.xml'),
+            ]
     else:
         try:
             data_dir_str = str(data_dir).lower()
@@ -172,7 +186,7 @@ def get_an_xs(
     if data_dir is None and _should_use_sources_for_an_xs(zaid):
         sources_dir = _get_sources_an_xs_dir()
         if sources_dir:
-            logger.info(f"Using SOURCES data for ZAID {zaid} based on sources_overrides.yaml")
+            logger.info(f"Using SOURCES data for ZAID {zaid} based on data_overrides.yaml")
             return get_sources_an_xs(z, a, symbol, sources_dir)
 
     if data_dir == "sources" or (data_dir is not None and "sources" in str(
@@ -235,7 +249,7 @@ def get_stopping_power(
     if data_dir is None and (_should_use_sources_for_an_xs(zaid) or _should_use_sources_for_stopping(zaid)):
         sources_dir = _get_sources_stopping_dir()
         if sources_dir:
-            logger.info(f"Using SOURCES stopping power for ZAID {zaid} based on sources_overrides.yaml")
+            logger.info(f"Using SOURCES stopping power for ZAID {zaid} based on data_overrides.yaml")
             return get_sources_stopping_power(zaid, sources_dir, atomic_mass=atomic_mass)
 
     if data_dir == "sources" or (
@@ -301,7 +315,7 @@ def get_branching_info(zaid: int,
     if data_dir is None and _should_use_sources_for_an_xs(zaid):
         sources_dir = _get_sources_an_xs_dir()
         if sources_dir:
-            logger.info(f"Using SOURCES branching data for ZAID {zaid} based on sources_overrides.yaml")
+            logger.info(f"Using SOURCES branching data for ZAID {zaid} based on data_overrides.yaml")
             s4c_key = f"{z:04d}{a*10:04d}"
             return get_sources_branching_info(s4c_key, sources_dir)
 

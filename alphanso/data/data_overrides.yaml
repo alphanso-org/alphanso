@@ -1,4 +1,7 @@
 an_xs:
+  use_tendl_zaids:
+    # Li-6
+    - 3006
   use_sources_tape_zaids:
     # C-13
     - 6013
