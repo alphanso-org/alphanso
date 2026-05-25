@@ -1,9 +1,12 @@
+import glob
+import gzip
 import xml.etree.ElementTree as ET
 import numpy as np
 import os
 import math
 import re
 import yaml
+import zlib as _zlib
 import logging
 from collections import defaultdict
 from typing import Optional, Dict, Tuple, List
@@ -21,6 +24,11 @@ from .atomic_data_loader import get_atomic_mass as get_atomic_mass_from_db
 from .data_manager import get_data_dir
 
 logger = logging.getLogger(__name__)
+
+_G4HPDATA_ENV = "G4PARTICLEHPDATA"
+_XML_ATTR_MT = "ENDF_MT"
+_XML_TAG_MULT_SUM = "multiplicitySum"
+_XML_TAG_REACTION = "reaction"
 
 
 def _default_data_root():
@@ -337,7 +345,8 @@ def get_branching_info(zaid: int,
     if "tendl" in found_path.lower():
         tendl_branch = _get_tendl_branching_info(root, zaid)
         if tendl_branch is not None:
-            return tendl_branch
+            tq, tl, td = tendl_branch
+            return _extend_branching_with_jendltendl01(zaid, tq, tl, td, data_dir)
 
     try:
         level_energies, level_cross_sections, q_value = _get_endf_level_data(
@@ -354,7 +363,8 @@ def get_branching_info(zaid: int,
                 troot = ttree.getroot()
                 tendl_branch = _get_tendl_branching_info(troot, zaid)
                 if tendl_branch is not None:
-                    return tendl_branch
+                    tq, tl, td = tendl_branch
+                    return _extend_branching_with_jendltendl01(zaid, tq, tl, td, data_dir)
             except Exception:
                 pass
 
@@ -430,6 +440,10 @@ def get_branching_info(zaid: int,
 
     except Exception:
         pass
+
+    q_value, level_energies_list, branching_data = _extend_branching_with_jendltendl01(
+        zaid, q_value, level_energies_list, branching_data, data_dir
+    )
 
     return q_value, level_energies_list, branching_data
 
@@ -792,6 +806,298 @@ def _parse_ripl3_gamma_cascades(filepath: os.PathLike, target_a: int, level_ener
     return None
 
 
+_PROTON_MASS_AMU: float = 1.00782503207
+
+_DAUGHTER_LEVEL_ENERGIES_MEV: Dict[int, List[float]] = {
+    6012: [0.0, 4.4389, 7.6542, 9.6410, 10.3531, 12.7126],
+    7014: [0.0, 2.3126, 3.9478, 4.9153, 5.1059, 5.6910, 5.8340, 6.2035, 6.4460],
+    8016: [0.0, 6.0497, 6.9171, 7.1169, 7.6170, 8.8720, 9.8450, 9.5850, 10.3560],
+    10020: [0.0, 1.6337, 4.2479, 4.9669, 5.6213, 5.7884, 6.7207, 7.0424, 7.1542],
+}
+
+
+def _compute_neutron_sep_energy(product_zaid: int) -> Optional[float]:
+    """
+    Compute the neutron separation energy for a nucleus using tabulated atomic masses.
+
+    Uses atomic masses so that electron binding energies cancel exactly.
+
+    Args:
+        product_zaid: ZAID of the nucleus in ZZZAAA format.
+
+    Returns:
+        Neutron separation energy in MeV, or None if masses are unavailable.
+    """
+    z = product_zaid // 1000
+    a = product_zaid % 1000
+    if a < 2:
+        return None
+    daughter_zaid = z * 1000 + (a - 1)
+    m_product = get_atomic_mass_from_db(product_zaid)
+    m_daughter = get_atomic_mass_from_db(daughter_zaid)
+    m_n = ANEUT_MASS
+    if m_product is None or m_daughter is None:
+        return None
+    return (m_daughter + m_n - m_product) * AMU_TO_MEV
+
+
+def _compute_proton_sep_energy(product_zaid: int) -> Optional[float]:
+    """
+    Compute the proton separation energy for a nucleus using tabulated atomic masses.
+
+    Uses atomic masses so that electron binding energies cancel exactly.
+
+    Args:
+        product_zaid: ZAID of the nucleus in ZZZAAA format.
+
+    Returns:
+        Proton separation energy in MeV, or None if masses are unavailable.
+    """
+    z = product_zaid // 1000
+    a = product_zaid % 1000
+    if z < 1 or a < 2:
+        return None
+    daughter_zaid = (z - 1) * 1000 + (a - 1)
+    m_product = get_atomic_mass_from_db(product_zaid)
+    m_daughter = get_atomic_mass_from_db(daughter_zaid)
+    m_h1 = get_atomic_mass_from_db(1001)
+    if m_product is None or m_daughter is None or m_h1 is None:
+        return None
+    return (m_daughter + m_h1 - m_product) * AMU_TO_MEV
+
+
+def _flatten_cascade(
+    start_idx: int,
+    cascades: Dict[int, List[Tuple[int, float, float]]],
+    level_energies: List[float],
+) -> List[Tuple[float, float]]:
+    """
+    Propagate a cascade from start_idx to the ground state and collect all emitted gammas.
+
+    Iterates the full cascade chain so that intermediate levels are followed
+    rather than stopping after a single transition.
+
+    Args:
+        start_idx: Level index to start from.
+        cascades: Gamma transition dict {level_idx: [(final_idx, E_gamma_MeV, prob)]}.
+        level_energies: Level energies in MeV.
+
+    Returns:
+        List of (gamma_energy_MeV, cumulative_probability) pairs.
+    """
+    gammas: Dict[float, float] = defaultdict(float)
+    stack = [(start_idx, 1.0)]
+    max_depth = (len(level_energies) + 1) * 4
+    depth = 0
+    while stack and depth < max_depth:
+        depth += 1
+        idx, pop = stack.pop()
+        if idx == 0 or pop <= 1e-15:
+            continue
+        transitions = cascades.get(idx, [])
+        if not transitions:
+            e = level_energies[idx] if idx < len(level_energies) else 0.0
+            if e > 0.0:
+                gammas[round(e, 6)] += pop
+            continue
+        for final_idx, gamma_e, prob in transitions:
+            if gamma_e > 0.0:
+                gammas[round(gamma_e, 6)] += pop * prob
+            if final_idx > 0:
+                stack.append((final_idx, pop * prob))
+    return list(gammas.items())
+
+
+def _reroute_unbound_levels(
+    product_zaid: int,
+    cascades: Dict[int, List[Tuple[int, float, float]]],
+    level_energies: List[float],
+    data_dir: Optional[os.PathLike],
+) -> Dict[int, List[Tuple[int, float, float]]]:
+    """
+    Replace cascade entries for proton-unbound product levels with gamma lines
+    from the daughter nucleus reached by proton emission.
+
+    When an (alpha,n) product level has excitation energy above the proton
+    separation energy, the level decays by proton emission rather than by
+    gamma emission.  ALPHANSO's gamma-only cascade model produces zero yield
+    for such levels.  This function routes the population through the daughter
+    nucleus so that gammas from the daughter de-excitation are included.
+
+    Population is distributed uniformly across all daughter levels energetically
+    accessible from the available energy E_avail = E_level - S_p.  The daughter
+    cascade is then fully propagated to the ground state and the resulting gamma
+    lines are embedded directly as transitions from the unbound level to the
+    product ground state (final_idx = 0), preventing double-counting in the
+    iterative cascade loop of _calculate_gamma_spectrum.
+
+    Scaling without renormalization is intentional: probability not assigned to
+    any transition represents population that reaches the daughter ground state
+    without emitting a gamma.
+
+    Args:
+        product_zaid: ZAID of the primary (alpha,n) product.
+        cascades: Gamma cascade dict for the product nucleus.
+        level_energies: Level energies of the product nucleus in MeV.
+        data_dir: Data directory passed through to get_gamma_cascade_info.
+
+    Returns:
+        Modified cascade dict (new object; input is not modified).
+    """
+    s_p = _compute_proton_sep_energy(product_zaid)
+    if s_p is None or s_p <= 0.0:
+        return cascades
+
+    unbound = [i for i, e in enumerate(level_energies) if i > 0 and e > s_p]
+    if not unbound:
+        return cascades
+
+    z = product_zaid // 1000
+    a = product_zaid % 1000
+    daughter_zaid = (z - 1) * 1000 + (a - 1)
+
+    daughter_levels = _DAUGHTER_LEVEL_ENERGIES_MEV.get(daughter_zaid)
+    if daughter_levels is None:
+        daughter_gnds = _find_gnds_xml(daughter_zaid, data_dir)
+        if daughter_gnds is not None:
+            try:
+                root = ET.parse(daughter_gnds).getroot()
+                lev_dict, _, _ = _get_endf_level_data(root)
+                if lev_dict:
+                    max_l = max(lev_dict.keys())
+                    daughter_levels = [lev_dict.get(i, 0.0) for i in range(max_l + 1)]
+            except Exception:
+                pass
+
+    if daughter_levels is None or len(daughter_levels) < 2:
+        return cascades
+
+    daughter_cascades = get_gamma_cascade_info(
+        daughter_zaid,
+        data_dir=data_dir,
+        level_energies=daughter_levels,
+    )
+    if daughter_cascades is None:
+        return cascades
+
+    modified: Dict[int, List[Tuple[int, float, float]]] = {
+        k: list(v) for k, v in cascades.items()
+    }
+
+    for i in unbound:
+        e_avail = level_energies[i] - s_p
+        accessible = [j for j, e in enumerate(daughter_levels) if j > 0 and e <= e_avail]
+        if not accessible:
+            modified[i] = []
+            continue
+        pop_each = 1.0 / len(accessible)
+        gamma_accum: Dict[float, float] = defaultdict(float)
+        for j in accessible:
+            for e_gamma, prob in _flatten_cascade(j, daughter_cascades, daughter_levels):
+                gamma_accum[e_gamma] += pop_each * prob
+        modified[i] = [
+            (0, e_gamma, p)
+            for e_gamma, p in gamma_accum.items()
+            if p > 0.0
+        ]
+
+    return modified
+
+
+_GAMMA_CASCADE_CORRECTIONS: Dict[int, list] = {
+    8016: [
+        {
+            'type': 'zero_level',
+            'from_energy_mev': 6.048,
+            'tolerance': 0.005,
+        },
+        {
+            'type': 'scale_branch',
+            'from_energy_mev': 8.869,
+            'to_energy_mev': 0.0,
+            'scale': 0.05,
+            'tolerance': 0.010,
+        },
+    ],
+    10021: [
+        {
+            'type': 'scale_branch',
+            'from_energy_mev': 2.795,
+            'to_energy_mev': 0.0,
+            'scale': 1.0 / 300.0,
+            'tolerance': 0.003,
+        },
+        {
+            'type': 'scale_branch',
+            'from_energy_mev': 2.789,
+            'to_energy_mev': 0.351,
+            'scale': 1.0 / 13.0,
+            'tolerance': 0.003,
+        },
+    ],
+}
+
+
+def _apply_gamma_cascade_corrections(
+    product_zaid: int,
+    cascades: Dict[int, List[Tuple[int, float, float]]],
+    level_energies: List[float],
+) -> Dict[int, List[Tuple[int, float, float]]]:
+    """
+    Apply known corrections to RIPL-3 gamma cascade data for specific product nuclei.
+
+    Corrections address three classes of error documented against SaG4n/GEANT4:
+      - E0 transitions that cannot emit a single photon (set branch to zero).
+      - K-forbidden transitions whose RIPL-3 branch is orders of magnitude too large.
+      - Levels whose particle-decay widths dominate but are not carried in RIPL-3,
+        causing the gamma/total ratio to be assigned as 100%.
+
+    Scaling a branch without renormalising is intentional: the probability not
+    assigned to any gamma transition represents population lost to particle decay.
+
+    Args:
+        product_zaid: ZAID of the product nucleus.
+        cascades: Gamma cascade dict {level_idx: [(final_idx, E_gamma_MeV, prob)]}.
+        level_energies: List of level energies in MeV, index 0 is the ground state.
+
+    Returns:
+        Corrected cascade dict (new object; input is not modified).
+    """
+    corrections = _GAMMA_CASCADE_CORRECTIONS.get(product_zaid)
+    if not corrections:
+        return cascades
+
+    def _find_idx(e_mev: float, tol: float) -> Optional[int]:
+        for i, e in enumerate(level_energies):
+            if abs(e - e_mev) <= tol:
+                return i
+        return None
+
+    modified: Dict[int, List[Tuple[int, float, float]]] = {
+        k: list(v) for k, v in cascades.items()
+    }
+
+    for corr in corrections:
+        from_idx = _find_idx(corr['from_energy_mev'], corr['tolerance'])
+        if from_idx is None:
+            continue
+
+        if corr['type'] == 'zero_level':
+            modified[from_idx] = []
+
+        elif corr['type'] == 'scale_branch':
+            to_idx = _find_idx(corr['to_energy_mev'], corr['tolerance'])
+            if to_idx is None:
+                continue
+            scale = corr['scale']
+            modified[from_idx] = [
+                (f, e, p * scale if f == to_idx else p)
+                for f, e, p in modified.get(from_idx, [])
+            ]
+
+    return modified
+
+
 def get_gamma_cascade_info(
     product_zaid: int,
     data_dir: Optional[os.PathLike] = None,
@@ -835,7 +1141,8 @@ def get_gamma_cascade_info(
         cascades = _parse_ripl3_gamma_cascades(ripl3_path, a, level_energies)
         if cascades is not None:
             logger.debug(f"Loaded gamma cascade data for ZAID {product_zaid} from RIPL-3")
-            return cascades
+            cascades = _reroute_unbound_levels(product_zaid, cascades, level_energies, data_dir)
+            return _apply_gamma_cascade_corrections(product_zaid, cascades, level_energies)
 
     symbol = atomic_data.get_element_symbol(z)
     possible_paths = [
@@ -849,12 +1156,13 @@ def get_gamma_cascade_info(
             cascades = _parse_endf_gamma_cascades(filepath, level_energies)
             if cascades is not None:
                 logger.debug(f"Loaded gamma cascade data for ZAID {product_zaid} from {filepath}")
-                return cascades
+                cascades = _reroute_unbound_levels(product_zaid, cascades, level_energies, data_dir)
+                return _apply_gamma_cascade_corrections(product_zaid, cascades, level_energies)
 
     logger.debug(f"Using ground-state fallback gamma cascade model for product ZAID {product_zaid}")
     cascades = _get_ground_state_cascade(level_energies)
-
-    return cascades
+    cascades = _reroute_unbound_levels(product_zaid, cascades, level_energies, data_dir)
+    return _apply_gamma_cascade_corrections(product_zaid, cascades, level_energies)
 
 
 def _calculate_sfnu_from_cumulative_dist(cum_dist: List[float]) -> float:
@@ -1307,19 +1615,47 @@ def get_decay_spectrum(
 def _get_tendl_branching_info(
         root, zaid: int) -> Optional[Tuple[float, List[float], Dict[float, List[float]]]]:
     """
-    TENDL fallback - returns hardcoded ground-state branching.
+    Parse branching data from a TENDL GNDS XML file.
+
+    Reads all discrete level cross sections (MT=50 through MT=90) using the same
+    _get_endf_level_data / _calculate_branching_fractions pipeline as the JENDL
+    path.  Level energies absent from nuclide elements are recovered from the
+    per-reaction Q-values (see _get_endf_level_data).  This makes TENDL files
+    contribute higher discrete levels that JENDL truncates to the MT=91 continuum.
+
+    Falls back to ground-state-only branching when no discrete level cross
+    sections are found, preserving the previous behaviour for targets where the
+    TENDL file does not carry discrete channel data.
 
     Args:
-        root: Root element of the TENDL XML file
-        zaid: ZAID identifier
+        root: Root element of the TENDL GNDS XML file.
+        zaid: ZAID identifier of the target nucleus.
 
     Returns:
-        Tuple of (q_value, level_energies, branching_data) or None if parsing fails
+        Tuple of (q_value_MeV, level_energies_MeV, branching_data) or None if
+        parsing fails entirely.
     """
-    reactions = root.findall(".//reaction")
-    if not reactions:
-        return None
+    z = zaid // 1000
+    a = zaid % 1000
+    product_zaid = (z + 2) * 1000 + (a + 3)
 
+    m_target = get_atomic_mass_from_db(zaid)
+    m_product = get_atomic_mass_from_db(product_zaid)
+    if m_target is not None and m_product is not None:
+        q_value = ((m_target + ALPH_MASS) - (m_product + ANEUT_MASS)) * AMU_TO_MEV
+    else:
+        q_value = 0.0
+
+    lev_dict, level_cross_sections, _ = _get_endf_level_data(root)
+
+    if len(level_cross_sections) > 1:
+        max_l = max(lev_dict.keys()) if lev_dict else 0
+        level_energies_list = [lev_dict.get(i, 0.0) for i in range(max_l + 1)]
+        branching_data = _calculate_branching_fractions(level_cross_sections)
+        if branching_data:
+            return q_value, level_energies_list, branching_data
+
+    reactions = root.findall(".//reaction")
     energy_grid = None
     for reaction in reactions:
         xys = reaction.find(".//crossSection//XYs1d")
@@ -1328,46 +1664,309 @@ def _get_tendl_branching_info(
             try:
                 arr = np.array([float(x) for x in txt.split()])
                 if arr.size >= 2 and arr.size % 2 == 0:
-                    energies_eV = arr[0::2]
-                    energy_grid = energies_eV / 1e6
+                    energy_grid = arr[0::2] / 1e6
                     break
             except Exception:
                 continue
-
     if energy_grid is None:
         energy_grid = np.arange(0.1, 15.1, 0.1)
 
-    z = zaid // 1000
-    a = zaid % 1000
-    target_zaid = zaid
-    product_zaid = (z + 2) * 1000 + (a + 3)
-
-    m_target = get_atomic_mass_from_db(target_zaid)
-    m_product = get_atomic_mass_from_db(product_zaid)
-
-    if m_target is not None and m_product is not None:
-        q_amu = (m_target + ALPH_MASS) - (m_product + ANEUT_MASS)
-        q_value = q_amu * AMU_TO_MEV
-    else:
-        q_value = 0
-
-    level_energies = [0.0]
-
     branching_data = {float(e): [1.0] for e in energy_grid}
+    return q_value, [0.0], branching_data
+
+
+_JENDLTENDL01_NAME_MAP = {
+    3006: '3_6_Lithium',
+    3007: '3_7_Lithium',
+    4009: '4_9_Berylium',
+    5010: '5_10_Boron',
+    5011: '5_11_Boron',
+    6012: '6_12_Carbon',
+    6013: '6_13_Carbon',
+    7014: '7_14_Nitrogen',
+    7015: '7_15_Nitrogen',
+    8017: '8_17_Oxygen',
+    8018: '8_18_Oxygen',
+}
+
+
+def _parse_jendltendl01_channel_xs(filepath):
+    """
+    Parse a JENDLTENDL01 Fx file and return the per-channel cross section.
+
+    Returns (q_mev, e_mev_array, xs_barns_array).
+    """
+    with open(filepath) as fh:
+        tokens = fh.read().split()
+
+    v2 = float(tokens[2])
+    if abs(v2) < 1000:
+        q_ev = float(tokens[4])
+        n_pts = int(tokens[6])
+        data_start = 7
+    else:
+        q_ev = v2
+        n_pts = int(tokens[4])
+        data_start = 5
+
+    e_list = []
+    xs_list = []
+    for i in range(n_pts):
+        e_list.append(float(tokens[data_start + 2 * i]))
+        xs_list.append(float(tokens[data_start + 2 * i + 1]))
+
+    return q_ev / 1e6, np.array(e_list) / 1e6, np.array(xs_list)
+
+
+def _parse_jendltendl01_f01_sections(
+        filepath: str
+) -> List[Tuple[int, float, np.ndarray, np.ndarray]]:
+    """
+    Parse the multi-section JENDLTENDL01 F01 file.
+
+    The F01 file contains stacked MT sections: a total cross section (MT=4),
+    per-level discrete cross sections (MT=50-90), and a continuum section
+    (MT=91).  Each MT section appears twice: first as a cross-section table,
+    then as a secondary-distribution table.  Only the cross-section occurrences
+    are returned.
+
+    The XS occurrence of each MT section has the token pattern:
+        MT  0
+        Q_eV  0  N_pts
+        E1 XS1  E2 XS2  ...  (N_pts pairs)
+
+    The distribution occurrence has a different header (second token != 0), so
+    it is skipped automatically.
+
+    Returns:
+        List of (mt, q_ev, e_mev_array, xs_barns_array) for each discrete
+        level MT (50-90 inclusive).  MT=4 (total) and MT=91 (continuum) are
+        excluded.
+    """
+    with open(filepath) as fh:
+        tokens = fh.read().split()
+
+    result = []
+    i = 0
+    while i < len(tokens) - 4:
+        try:
+            mt = int(tokens[i])
+        except ValueError:
+            i += 1
+            continue
+        if tokens[i + 1] != '0':
+            i += 1
+            continue
+        if not (50 <= mt <= 90):
+            i += 1
+            continue
+        try:
+            q_ev = float(tokens[i + 2])
+            zero_check = tokens[i + 3]
+            n_pts = int(tokens[i + 4])
+        except (ValueError, IndexError):
+            i += 1
+            continue
+        if zero_check != '0':
+            i += 1
+            continue
+        if n_pts <= 0 or i + 5 + 2 * n_pts > len(tokens):
+            i += 1
+            continue
+        e_list = []
+        xs_list = []
+        for k in range(n_pts):
+            e_list.append(float(tokens[i + 5 + 2 * k]))
+            xs_list.append(float(tokens[i + 5 + 2 * k + 1]))
+        result.append((
+            mt,
+            q_ev,
+            np.array(e_list) / 1e6,
+            np.array(xs_list),
+        ))
+        i += 5 + 2 * n_pts
+
+    return result
+
+
+def _get_jendltendl01_extra_levels(
+        zaid: int,
+        jendl_level_energies: List[float],
+        data_dir: Optional[os.PathLike] = None
+) -> Optional[Tuple[List[float], Dict[int, Dict[float, float]]]]:
+    """
+    Parse JENDLTENDL01 Fx files for channels with level energies above the JENDL ceiling.
+
+    Only levels whose derived excitation energy exceeds the highest JENDL level
+    (by more than a tolerance) are returned, avoiding double-counting.
+
+    Args:
+        zaid: Target ZAID in ZZZAAA format.
+        jendl_level_energies: List of level energies (MeV) already covered by JENDL.
+        data_dir: Override for the data root directory.
+
+    Returns:
+        (extra_level_energies_mev, extra_level_xs) where extra_level_xs is
+        {level_idx: {alpha_energy_mev: xs_barns}}, with indices continuing from
+        len(jendl_level_energies). Returns None if no JENDLTENDL01 data is available.
+    """
+    if zaid not in _JENDLTENDL01_NAME_MAP:
+        return None
+
+    name = _JENDLTENDL01_NAME_MAP[zaid]
+    if data_dir is None:
+        jt_dir = os.path.join(_default_data_root(), 'an_xs', 'JENDLTENDL01')
+    else:
+        jt_dir = os.path.join(str(data_dir), 'an_xs', 'JENDLTENDL01')
+
+    f01_path = os.path.join(jt_dir, 'F01', name)
+    if not os.path.exists(f01_path):
+        return None
 
     try:
-        z = zaid // 1000
-        if z == 12:
-            energies = sorted(branching_data.keys(),
-                              key=lambda e: abs(float(e) - 5.0))
-            if energies:
-                e_key = energies[0]
-                fractions = np.asarray(branching_data[e_key], dtype=float)
-
+        q_gs, _, _ = _parse_jendltendl01_channel_xs(f01_path)
     except Exception:
-        pass
+        return None
 
-    return q_value, level_energies, branching_data
+    jendl_ceiling = max(jendl_level_energies) if jendl_level_energies else 0.0
+    tolerance = 0.1
+
+    z_target = zaid // 1000
+    a_target = zaid % 1000
+    product_zaid = (z_target + 2) * 1000 + (a_target + 3)
+    s_n = _compute_neutron_sep_energy(product_zaid)
+    s_n_limit = s_n - 0.2 if s_n is not None else float('inf')
+
+    extra_energies = []
+    extra_xs_dict = {}
+    next_idx = len(jendl_level_energies)
+
+    try:
+        f01_sections = _parse_jendltendl01_f01_sections(f01_path)
+    except Exception:
+        f01_sections = []
+
+    for mt, q_ev, e_mev, xs_barns in f01_sections:
+        q_k = q_ev / 1e6
+        e_level = q_gs - q_k
+        if e_level <= jendl_ceiling + tolerance:
+            continue
+        if e_level >= s_n_limit:
+            continue
+        if any(abs(e_level - e_ex) < tolerance for e_ex in extra_energies):
+            continue
+        xs_at_e = {float(e): float(xs) for e, xs in zip(e_mev, xs_barns)}
+        extra_energies.append(e_level)
+        extra_xs_dict[next_idx] = xs_at_e
+        next_idx += 1
+
+    for fx in range(1, 37):
+        fxdir = f'F{fx:02d}'
+        if fxdir == 'F01':
+            continue
+        path = os.path.join(jt_dir, fxdir, name)
+        if not os.path.exists(path):
+            continue
+        try:
+            q_k, e_mev, xs_barns = _parse_jendltendl01_channel_xs(path)
+        except Exception:
+            continue
+
+        e_level = q_gs - q_k
+        if e_level <= jendl_ceiling + tolerance:
+            continue
+        if e_level >= s_n_limit:
+            continue
+
+        if any(abs(e_level - e_ex) < tolerance for e_ex in extra_energies):
+            continue
+
+        xs_at_e = {float(e): float(xs) for e, xs in zip(e_mev, xs_barns)}
+        extra_energies.append(e_level)
+        extra_xs_dict[next_idx] = xs_at_e
+        next_idx += 1
+
+    if not extra_energies:
+        return None
+
+    return extra_energies, extra_xs_dict
+
+
+def _extend_branching_with_jendltendl01(
+        zaid: int,
+        q_value: float,
+        level_energies: List[float],
+        branching_data: Dict[float, List[float]],
+        data_dir: Optional[os.PathLike] = None
+) -> Tuple[float, List[float], Dict[float, List[float]]]:
+    """
+    Extend JENDL branching data with higher-level channels from JENDLTENDL01.
+
+    The extra JENDLTENDL01 channels (above the JENDL level ceiling) are added to the
+    level list and their per-energy cross sections are folded into the branching
+    fractions.  Cross sections for all channels (JENDL + extra) are summed to form
+    the new total, so fractions are renormalised consistently.
+
+    Args:
+        zaid: Target ZAID.
+        q_value: Existing ground-state Q-value (MeV).
+        level_energies: Level energies already in the JENDL result (MeV).
+        branching_data: Existing branching fractions {E_MeV: [fraction_per_level]}.
+        data_dir: Data root override.
+
+    Returns:
+        (q_value, extended_level_energies, extended_branching_data)
+    """
+    result = _get_jendltendl01_extra_levels(zaid, level_energies, data_dir)
+    if result is None:
+        return q_value, level_energies, branching_data
+
+    extra_level_energies, extra_level_xs = result
+    n_jendl = len(level_energies)
+    extended_levels = list(level_energies) + extra_level_energies
+
+    extended_branching = {}
+    for e_alpha, fracs in branching_data.items():
+        existing_xs = list(fracs)
+        total_existing = sum(existing_xs)
+
+        extra_xs_at_e = []
+        for idx in sorted(extra_level_xs.keys()):
+            xs_dict = extra_level_xs[idx]
+            es = sorted(xs_dict.keys())
+            if es and e_alpha >= min(es):
+                if e_alpha in xs_dict:
+                    extra_xs_at_e.append(xs_dict[e_alpha])
+                else:
+                    vals = [xs_dict[ee] for ee in es]
+                    try:
+                        f = interp1d(es, vals, kind='linear',
+                                     bounds_error=False, fill_value=0.0)
+                        extra_xs_at_e.append(float(f(e_alpha)))
+                    except Exception:
+                        extra_xs_at_e.append(0.0)
+            else:
+                extra_xs_at_e.append(0.0)
+
+        extra_total = sum(extra_xs_at_e)
+        grand_total = total_existing + extra_total
+
+        if grand_total <= 0:
+            extended_branching[e_alpha] = (
+                list(fracs) + [0.0] * len(extra_level_energies)
+            )
+            continue
+
+        if total_existing > 0:
+            scale = total_existing / grand_total
+            new_jendl = [f * scale for f in existing_xs]
+        else:
+            new_jendl = list(existing_xs)
+
+        new_extra = [x / grand_total for x in extra_xs_at_e]
+        extended_branching[e_alpha] = new_jendl + new_extra
+
+    return q_value, extended_levels, extended_branching
 
 
 def _parse_gnds_decay_data(
@@ -1952,6 +2551,223 @@ def _calculate_branching_fractions(
     return branching_data
 
 
+def _get_mt91_continuum_xs(root) -> Optional[Dict[float, float]]:
+    mt91 = root.find(".//reaction[@ENDF_MT='91']")
+    if mt91 is None:
+        return None
+    try:
+        xs = _get_cross_section_from_reaction(mt91)
+        return xs if xs else None
+    except Exception:
+        return None
+
+
+def _parse_ripl3_higher_levels(
+        filepath: os.PathLike,
+        product_a: int,
+        min_energy_mev: float,
+        max_energy_mev: float,
+) -> List[float]:
+    try:
+        with open(filepath, 'r') as fh:
+            lines = fh.readlines()
+    except Exception:
+        return []
+
+    result: List[float] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if len(line) < 10:
+            i += 1
+            continue
+        try:
+            a_val = int(line[5:10].strip())
+        except (ValueError, IndexError):
+            i += 1
+            continue
+        if a_val != product_a:
+            i += 1
+            continue
+
+        i += 1
+        while i < len(lines):
+            line = lines[i]
+            if len(line) < 14:
+                i += 1
+                continue
+            if line[0] not in (' ', '\t'):
+                break
+            try:
+                a_check = int(line[5:10].strip())
+                if a_check != product_a:
+                    break
+            except (ValueError, IndexError):
+                pass
+            try:
+                elv = float(line[4:14].strip())
+                ng = int(line[34:37].strip()) if len(line) > 36 and line[34:37].strip() else 0
+            except (ValueError, IndexError):
+                i += 1
+                continue
+            if min_energy_mev < elv < max_energy_mev:
+                result.append(elv)
+            i += ng + 1
+        break
+
+    return result
+
+
+def _extend_level_xs_with_mt91_continuum(
+        zaid: int,
+        q_value: float,
+        level_energies: Dict[int, float],
+        level_cross_sections: Dict[int, Dict[float, float]],
+        root,
+        data_dir: Optional[os.PathLike],
+) -> Tuple[Dict[int, float], Dict[int, Dict[float, float]]]:
+    xs91 = _get_mt91_continuum_xs(root)
+    if not xs91:
+        return level_energies, level_cross_sections
+
+    z_target = zaid // 1000
+    a_target = zaid % 1000
+    product_a = a_target + 3
+    product_z = z_target + 2
+    product_zaid = product_z * 1000 + product_a
+
+    if data_dir is None:
+        data_root = _default_data_root()
+    else:
+        data_root = str(data_dir)
+
+    ripl3_path = os.path.join(data_root, 'levels', f'z{product_z:03d}.dat')
+    if not os.path.exists(ripl3_path):
+        return level_energies, level_cross_sections
+
+    s_n = _compute_neutron_sep_energy(product_zaid)
+    max_level_e = (s_n - 0.1) if s_n is not None else 20.0
+
+    jendl_ceiling = max(level_energies.values()) if level_energies else 0.0
+    higher_levels = _parse_ripl3_higher_levels(
+        ripl3_path, product_a, jendl_ceiling, max_level_e
+    )
+    if not higher_levels:
+        return level_energies, level_cross_sections
+
+    existing_energies = list(level_energies.values())
+    dedup_tolerance = 0.01
+    higher_levels = [
+        e for e in higher_levels
+        if not any(abs(e - ex) < dedup_tolerance for ex in existing_energies)
+    ]
+    if not higher_levels:
+        return level_energies, level_cross_sections
+
+    next_idx = max(level_energies.keys()) + 1
+    new_level_energies: Dict[int, float] = dict(level_energies)
+    new_level_cross_sections: Dict[int, Dict[float, float]] = dict(level_cross_sections)
+    extra_indices: List[int] = []
+
+    for e_level in higher_levels:
+        if e_level <= q_value:
+            threshold = 0.0
+        else:
+            threshold = (e_level - q_value) * (a_target + 4) / a_target
+        xs_at: Dict[float, float] = {}
+        for e_alpha, xs_val in xs91.items():
+            if e_alpha < threshold or xs_val <= 0.0:
+                continue
+            xs_at[e_alpha] = xs_val
+        if xs_at:
+            new_level_energies[next_idx] = e_level
+            new_level_cross_sections[next_idx] = xs_at
+            extra_indices.append(next_idx)
+            next_idx += 1
+
+    if not extra_indices:
+        return level_energies, level_cross_sections
+
+    for idx in extra_indices:
+        xs_dict = new_level_cross_sections[idx]
+        for e_alpha in list(xs_dict.keys()):
+            count = sum(
+                1 for j in extra_indices
+                if j in new_level_cross_sections and e_alpha in new_level_cross_sections[j]
+            )
+            if count > 0:
+                xs_dict[e_alpha] /= count
+
+    return new_level_energies, new_level_cross_sections
+
+
+def get_mt91_extra_levels(
+        zaid: int,
+        q_value: float,
+        jendl_level_energies: List[float],
+        data_dir: Optional[os.PathLike] = None,
+) -> Optional[List[Tuple[float, float]]]:
+    """
+    Return RIPL-3 discrete levels above the JENDL ceiling for use in gamma calculation.
+
+    These are the product-nucleus levels that receive population from the MT=91
+    continuum (alpha,n) channel.  Each entry is (level_energy_MeV, threshold_MeV)
+    where threshold is the minimum incident alpha energy needed to reach that level.
+
+    Args:
+        zaid: Target ZAID.
+        q_value: Ground-state Q-value for the (alpha,n) reaction (MeV).
+        jendl_level_energies: Level energies already present in JENDL data (MeV).
+        data_dir: Data directory override.
+
+    Returns:
+        List of (level_energy_MeV, threshold_MeV) tuples, or None if no RIPL-3
+        data is found or no extra levels exist above the JENDL ceiling.
+    """
+    z_target = zaid // 1000
+    a_target = zaid % 1000
+    product_a = a_target + 3
+    product_z = z_target + 2
+    product_zaid = product_z * 1000 + product_a
+
+    if data_dir is None:
+        data_root = _default_data_root()
+    else:
+        data_root = str(data_dir)
+
+    ripl3_path = os.path.join(data_root, 'levels', f'z{product_z:03d}.dat')
+    if not os.path.exists(ripl3_path):
+        return None
+
+    s_n = _compute_neutron_sep_energy(product_zaid)
+    max_level_e = (s_n - 0.1) if s_n is not None else 20.0
+
+    jendl_ceiling = max(jendl_level_energies) if jendl_level_energies else 0.0
+    higher_levels = _parse_ripl3_higher_levels(
+        ripl3_path, product_a, jendl_ceiling, max_level_e
+    )
+    if not higher_levels:
+        return None
+
+    existing_energies = list(jendl_level_energies)
+    dedup_tolerance = 0.01
+    higher_levels = [
+        e for e in higher_levels
+        if not any(abs(e - ex) < dedup_tolerance for ex in existing_energies)
+    ]
+    if not higher_levels:
+        return None
+
+    result = []
+    for e_level in higher_levels:
+        if e_level <= q_value:
+            threshold = 0.0
+        else:
+            threshold = (e_level - q_value) * (a_target + 4) / a_target
+        result.append((e_level, threshold))
+    return result
+
+
 def _get_endf_level_data(
         root) -> Tuple[Dict[int, float], Dict[int, Dict[float, float]], float]:
     """
@@ -2001,5 +2817,480 @@ def _get_endf_level_data(
             cs_data = _get_cross_section_from_reaction(reaction)
             if cs_data:
                 level_cross_sections[level_idx] = cs_data
+            if level_idx not in level_energies and ground_state_q_value != 0.0:
+                q_elem = reaction.find(".//Q/constant1d")
+                if q_elem is not None:
+                    try:
+                        q_mt_mev = float(q_elem.get('value', 0)) / 1e6
+                        derived = ground_state_q_value - q_mt_mev
+                        if derived > 0.0:
+                            level_energies[level_idx] = derived
+                    except (TypeError, ValueError):
+                        pass
 
     return level_energies, level_cross_sections, ground_state_q_value
+
+
+def _open_possibly_compressed(filepath: str) -> str:
+    """Return the decoded text content of a file that may be gzip, raw zlib, or plain text.
+
+    Args:
+        filepath: Path to the file to open.
+
+    Returns:
+        Decoded string contents of the file.
+
+    Raises:
+        OSError: If the file cannot be opened by any method.
+    """
+    try:
+        with gzip.open(filepath, 'rt', encoding='utf-8', errors='replace') as fh:
+            return fh.read()
+    except (OSError, EOFError, gzip.BadGzipFile):
+        pass
+    try:
+        with open(filepath, 'rb') as fh:
+            raw = fh.read()
+        return _zlib.decompress(raw).decode('utf-8', errors='replace')
+    except (_zlib.error, Exception):
+        pass
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as fh:
+        return fh.read()
+
+
+def _find_f02_file(target_zaid: int, data_dir: Optional[str] = None) -> Optional[str]:
+    """Return the path to the G4TENDL F02 photon-production file for target_zaid, or None.
+
+    Searches the bundled data directory first, then falls back to the directory
+    pointed to by the G4PARTICLEHPDATA environment variable.
+
+    Args:
+        target_zaid: ZAID in ZZZAAA format.
+        data_dir: Override for the data root directory. None uses the default.
+
+    Returns:
+        Absolute path to the first matching F02 file, or None if not found.
+    """
+    z = target_zaid // 1000
+    a = target_zaid % 1000
+    prefix = f"{z}_{a}_"
+
+    if data_dir is None:
+        data_root = _default_data_root()
+    else:
+        data_root = str(data_dir)
+
+    for search_root in [data_root, os.environ.get(_G4HPDATA_ENV, "")]:
+        if not search_root:
+            continue
+        matches = glob.glob(os.path.join(search_root, "Alpha/Inelastic/F02", prefix + "*"))
+        if matches:
+            return matches[0]
+
+    return None
+
+
+def _parse_f02_file(
+        filepath: str,
+) -> Optional[Tuple[Dict[float, float], Dict[float, List[Tuple[float, float]]]]]:
+    """Parse a G4TENDL F02 photon-production file.
+
+    The file format has three sections:
+      Section 1 (0 0 n header): total inelastic cross section table (skipped).
+      Section 2 (n 1 n 2 header): photon multiplicity per reaction vs alpha energy.
+      Section 3 (per alpha-energy records): discrete gamma spectrum entries.
+
+    Args:
+        filepath: Path to the F02 file (may be gzip-compressed, raw zlib-compressed,
+                  or plain text).
+
+    Returns:
+        Tuple of (mult_dict, spectrum) where mult_dict maps alpha energy in MeV to
+        photon multiplicity, and spectrum maps alpha energy in MeV to a list of
+        (gamma_energy_MeV, weight) pairs. Returns None if parsing fails.
+    """
+    try:
+        content = _open_possibly_compressed(filepath)
+    except Exception as exc:
+        logger.debug("Failed to open F02 file %s: %s", filepath, exc)
+        return None
+
+    try:
+        tokens = content.split()
+        floats = []
+        for t in tokens:
+            try:
+                floats.append(float(t))
+            except ValueError:
+                floats.append(None)
+
+        n = len(floats)
+        i = 0
+
+        section1_found = False
+        while i < n - 2:
+            if (floats[i] == 0.0 and floats[i + 1] == 0.0
+                    and floats[i + 2] is not None
+                    and 2 <= floats[i + 2] <= 2000):
+                n_pairs = int(floats[i + 2])
+                i += 3 + 2 * n_pairs
+                section1_found = True
+                break
+            i += 1
+
+        if not section1_found:
+            return None
+
+        mult_dict = {}
+        while i < n - 3:
+            f0 = floats[i]
+            f1 = floats[i + 1]
+            f2 = floats[i + 2]
+            f3 = floats[i + 3]
+            if (f0 is not None and f1 == 1.0 and f2 is not None
+                    and f2 == f0 and f3 == 2.0 and 2 <= f0 <= 500):
+                n_mult = int(f0)
+                i += 4
+                for _ in range(n_mult):
+                    if i + 1 >= n:
+                        break
+                    e_ev = floats[i]
+                    mult = floats[i + 1]
+                    if e_ev is not None and mult is not None and e_ev > 0:
+                        mult_dict[e_ev / 1e6] = mult
+                    i += 2
+                break
+            i += 1
+
+        if not mult_dict:
+            return None
+
+        spectrum = {}
+        while i < n - 3:
+            f0 = floats[i]
+            f1 = floats[i + 1]
+            f2 = floats[i + 2]
+            f3 = floats[i + 3]
+            if (f0 is not None and f0 > 1e3
+                    and f1 is not None and 1.0 <= f1 <= 200.0
+                    and f1 == round(f1)
+                    and f2 == 0.0 and f3 == 2.0):
+                e_alpha_mev = f0 / 1e6
+                n_gammas = int(f1)
+                i += 4
+                pairs = []
+                for _ in range(n_gammas):
+                    if i + 2 >= n:
+                        break
+                    e_g = floats[i]
+                    weight = floats[i + 1]
+                    angle = floats[i + 2]
+                    if (e_g is not None and weight is not None
+                            and angle == 0.0 and e_g >= 0.0 and weight > 1e-30):
+                        pairs.append((e_g / 1e6, weight))
+                    i += 3
+                if pairs:
+                    spectrum[e_alpha_mev] = pairs
+            else:
+                i += 1
+
+        return mult_dict, spectrum
+
+    except Exception as exc:
+        logger.debug("Failed to parse F02 file %s: %s", filepath, exc)
+        return None
+
+
+def get_f02_gamma_data(
+        target_zaid: int,
+        data_dir: Optional[str] = None
+) -> Optional[Tuple[Dict[float, float], Dict[float, List[Tuple[float, float]]]]]:
+    """Return parsed F02 gamma data for target_zaid, or None if no file is found.
+
+    Args:
+        target_zaid: ZAID in ZZZAAA format.
+        data_dir: Override for the data root directory. None uses the default.
+
+    Returns:
+        Tuple of (mult_dict, spectrum) as returned by _parse_f02_file, or None
+        if no F02 file exists for this target or if parsing fails.
+    """
+    f02_path = _find_f02_file(target_zaid, data_dir)
+    if f02_path is None:
+        return None
+    result = _parse_f02_file(f02_path)
+    if result is None:
+        logger.warning("F02 file found for ZAID %d but could not be parsed: %s",
+                       target_zaid, f02_path)
+        return None
+    return result
+
+
+_AN_PRIMARY_MTS = frozenset(
+    [2, 4, 5, 11, 91, 201]
+    + list(range(50, 92))
+    + list(range(16, 46))
+)
+
+
+def _get_multiplicity_from_sum(elem: ET.Element) -> Optional[Dict[float, float]]:
+    """Extract a photon multiplicity table from a GNDS multiplicitySum XML element.
+
+    Args:
+        elem: XML element containing a multiplicitySum node.
+
+    Returns:
+        Dict mapping alpha energy in MeV to photon multiplicity, or None if no
+        valid data is found.
+    """
+    for xys in elem.iter():
+        vals_elem = None
+        for child in xys.iter():
+            if 'values' in child.tag:
+                vals_elem = child
+                break
+        if vals_elem is not None and vals_elem.text and vals_elem.text.strip():
+            vals = vals_elem.text.split()
+            if len(vals) >= 4 and len(vals) % 2 == 0:
+                try:
+                    floats = [float(v) for v in vals]
+                except ValueError:
+                    continue
+                ee = np.array(floats[0::2]) / 1e6
+                mv = np.array(floats[1::2])
+                if np.any(mv > 0):
+                    return dict(zip(ee, mv))
+    return None
+
+
+def _find_tendl_xml(target_zaid: int) -> Optional[str]:
+    """Return the path to the TENDL GNDS XML file for target_zaid, or None if absent.
+
+    Args:
+        target_zaid: ZAID in ZZZAAA format.
+
+    Returns:
+        Absolute path to the TENDL XML file, or None if not found.
+    """
+    data_root = _default_data_root()
+    path = os.path.join(data_root, 'an_xs', 'TENDL', f'{target_zaid}.xml')
+    return path if os.path.exists(path) else None
+
+
+def _load_tendl_gamma_channels(
+        target_zaid: int,
+        exclude_mts: Optional[frozenset] = None,
+) -> List[Tuple[Dict[float, float], Dict[float, float]]]:
+    """Load per-MT gamma production channels from the TENDL GNDS XML for target_zaid.
+
+    For each reaction MT that has a multiplicitySum element and a cross section,
+    returns a (xs_dict, mult_dict) pair where xs_dict maps alpha energy in MeV to
+    cross section in barns and mult_dict maps alpha energy in MeV to photon multiplicity.
+
+    Args:
+        target_zaid: ZAID in ZZZAAA format.
+        exclude_mts: Set of ENDF MT numbers to skip. None includes all MTs.
+
+    Returns:
+        List of (xs_dict, mult_dict) pairs, one per MT that has both cross section
+        and multiplicity data. Returns an empty list if the XML file is absent or
+        if no qualifying MTs are found.
+    """
+    xml_path = _find_tendl_xml(target_zaid)
+    if xml_path is None:
+        return []
+    try:
+        tree = ET.parse(xml_path)
+    except Exception as exc:
+        logger.debug("Failed to parse TENDL XML ZAID %d: %s", target_zaid, exc)
+        return []
+    root = tree.getroot()
+
+    mult_by_mt = {}
+    for elem in root.iter():
+        if _XML_TAG_MULT_SUM not in elem.tag:
+            continue
+        mt_str = elem.get(_XML_ATTR_MT)
+        if mt_str is None:
+            continue
+        try:
+            mt = int(mt_str)
+        except ValueError:
+            continue
+        if exclude_mts is not None and mt in exclude_mts:
+            continue
+        mult = _get_multiplicity_from_sum(elem)
+        if mult is not None:
+            mult_by_mt[mt] = mult
+
+    if not mult_by_mt:
+        return []
+
+    xs_by_mt = {}
+    for elem in root.iter():
+        if _XML_TAG_REACTION not in elem.tag:
+            continue
+        mt_str = elem.get(_XML_ATTR_MT)
+        if mt_str is None:
+            continue
+        try:
+            mt = int(mt_str)
+        except ValueError:
+            continue
+        if mt not in mult_by_mt:
+            continue
+        try:
+            xs = _get_cross_section_from_reaction(elem)
+        except Exception:
+            xs = None
+        if xs:
+            xs_by_mt[mt] = xs
+
+    return [
+        (xs_by_mt[mt], mult)
+        for mt, mult in mult_by_mt.items()
+        if mt in xs_by_mt
+    ]
+
+
+def get_secondary_gamma_channels(
+        target_zaid: int,
+) -> List[Tuple[Dict[float, float], Dict[float, float]]]:
+    """Return TENDL gamma channels that are NOT part of the primary (alpha,n) calculation.
+
+    Excludes MTs in _AN_PRIMARY_MTS (elastic, (alpha,n) levels, and all neutron-
+    producing channels) to avoid double-counting with the F02*sigma_an yield.
+
+    Args:
+        target_zaid: ZAID in ZZZAAA format.
+
+    Returns:
+        List of (xs_dict, mult_dict) pairs for non-primary gamma-producing MTs.
+    """
+    return _load_tendl_gamma_channels(target_zaid, exclude_mts=_AN_PRIMARY_MTS)
+
+
+def get_tendl_all_gamma_channels(
+        target_zaid: int,
+) -> List[Tuple[Dict[float, float], Dict[float, float]]]:
+    """Return all TENDL gamma production channels for target_zaid (no MT filtering).
+
+    Used when replacing F02*sigma_an with a full TENDL per-channel sum.
+
+    Args:
+        target_zaid: ZAID in ZZZAAA format.
+
+    Returns:
+        List of (xs_dict, mult_dict) pairs for all MTs with gamma multiplicity data.
+    """
+    return _load_tendl_gamma_channels(target_zaid)
+
+
+_TENDL_PRIMARY_RATIO_LO = 1.5
+_TENDL_PRIMARY_RATIO_HI = 3.0
+_TENDL_PRIMARY_MT4_THRESH = 0.1
+_TENDL_PRIMARY_E_REF = 8.0
+
+
+def tendl_is_primary_gamma_mode(
+        target_zaid: int,
+        f02_mult_dict: Dict[float, float],
+        an_xs_dict: Dict[float, float],
+) -> bool:
+    """Return True if the TENDL per-channel gamma sum should replace F02*sigma_an.
+
+    The check evaluates at a reference alpha energy of _TENDL_PRIMARY_E_REF MeV:
+      1. The ratio TENDL_total(xs*mult) / F02(sigma_an*mult) must be in
+         (_TENDL_PRIMARY_RATIO_LO, _TENDL_PRIMARY_RATIO_HI).
+      2. The MT=4 (alpha,n inelastic) multiplicity at the reference energy must
+         exceed _TENDL_PRIMARY_MT4_THRESH, indicating TENDL has adequate coverage
+         of the primary channel across the slowing-down integral range.
+
+    Currently returns False for all benchmarked targets; the infrastructure is
+    retained for future targets with more complete TENDL gamma data.
+
+    Args:
+        target_zaid: ZAID in ZZZAAA format.
+        f02_mult_dict: Dict mapping alpha energy in MeV to F02 photon multiplicity.
+        an_xs_dict: Dict mapping alpha energy in MeV to sigma_an in barns.
+
+    Returns:
+        True if TENDL per-channel mode is valid for this target, False otherwise.
+    """
+    xml_path = _find_tendl_xml(target_zaid)
+    if xml_path is None:
+        return False
+
+    an_e = np.array(sorted(an_xs_dict.keys()))
+    an_v = np.array([an_xs_dict[e] for e in an_e])
+    an_ref = float(np.interp(_TENDL_PRIMARY_E_REF, an_e, an_v, left=0.0, right=0.0))
+
+    f02_e = np.array(sorted(f02_mult_dict.keys()))
+    f02_v = np.array([f02_mult_dict[e] for e in f02_e])
+    f02_m_ref = float(np.interp(_TENDL_PRIMARY_E_REF, f02_e, f02_v))
+    f02_xm = an_ref * f02_m_ref
+    if f02_xm < 1e-10:
+        return False
+
+    try:
+        tree = ET.parse(xml_path)
+    except Exception:
+        return False
+    root = tree.getroot()
+
+    mult_by_mt = {}
+    for elem in root.iter():
+        if _XML_TAG_MULT_SUM not in elem.tag:
+            continue
+        mt_str = elem.get(_XML_ATTR_MT)
+        if mt_str is None:
+            continue
+        try:
+            mt = int(mt_str)
+        except ValueError:
+            continue
+        mult = _get_multiplicity_from_sum(elem)
+        if mult is not None:
+            mult_by_mt[mt] = mult
+
+    xs_by_mt = {}
+    for elem in root.iter():
+        if _XML_TAG_REACTION not in elem.tag:
+            continue
+        mt_str = elem.get(_XML_ATTR_MT)
+        if mt_str is None:
+            continue
+        try:
+            mt = int(mt_str)
+        except ValueError:
+            continue
+        if mt not in mult_by_mt:
+            continue
+        try:
+            xs = _get_cross_section_from_reaction(elem)
+        except Exception:
+            xs = None
+        if xs:
+            xs_by_mt[mt] = xs
+
+    tendl_total = 0.0
+    mt4_mult_ref = 0.0
+    for mt, mult in mult_by_mt.items():
+        if mt not in xs_by_mt:
+            continue
+        me = np.array(sorted(mult.keys()))
+        mv = np.array([mult[e] for e in me])
+        m_val = float(np.interp(_TENDL_PRIMARY_E_REF, me, mv, left=0.0, right=mv[-1]))
+        xs = xs_by_mt[mt]
+        xe = np.array(sorted(xs.keys()))
+        xv = np.array([xs[e] for e in xe])
+        x_val = float(np.interp(_TENDL_PRIMARY_E_REF, xe, xv))
+        tendl_total += x_val * m_val
+        if mt == 4:
+            mt4_mult_ref = m_val
+
+    ratio = tendl_total / f02_xm
+    return (
+        _TENDL_PRIMARY_RATIO_LO < ratio < _TENDL_PRIMARY_RATIO_HI
+        and mt4_mult_ref > _TENDL_PRIMARY_MT4_THRESH
+    )

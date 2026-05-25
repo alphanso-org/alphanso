@@ -15,6 +15,11 @@ from .parsers import (
     get_decay_spectrum,
     get_stopping_power,
     get_gamma_cascade_info,
+    get_f02_gamma_data,
+    get_secondary_gamma_channels,
+    get_tendl_all_gamma_channels,
+    tendl_is_primary_gamma_mode,
+    get_mt91_extra_levels,
     load_delayed_neutron_data)
 from .data_manager import ensure_data
 from .output_files import normalize_results_payload, write_results_yaml
@@ -274,7 +279,14 @@ class Transport(object):
             ep_branching,
             gamma_cascades=None,
             continuum_xs=None,
-            continuum_dist=None):
+            continuum_dist=None,
+            f02_mult=None,
+            f02_spectrum=None,
+            mt91_extra=None,
+            gamma_cascades_extended=None,
+            secondary_gamma_channels=None,
+            use_tendl_primary=False,
+            tendl_all_channels=None):
         """
         Calculate neutron yield and energy spectrum from alpha slowing down in target.
 
@@ -439,18 +451,153 @@ class Transport(object):
                     q_value, product_mass, target_mass_amu,
                     ANEUT_MASS, ALPH_MASS)
 
-        if gamma_cascades is not None:
-            gamma_yield, gamma_lines = Transport._calculate_gamma_spectrum(
-                yield_matrix,
-                valid_physics,
-                energy_levels,
-                gamma_cascades,
+        if f02_mult is not None and f02_spectrum is not None:
+            gamma_yield, gamma_lines = Transport._calculate_gamma_f02(
+                f02_mult,
+                f02_spectrum,
+                e_alpha_steps,
+                valid_mask,
+                de,
+                sp_grid,
+                cs_cm2_grid,
             )
+            if use_tendl_primary and tendl_all_channels:
+                e_steps_valid = e_alpha_steps[valid_mask]
+                de_valid = de[valid_mask]
+                sp_valid = sp_grid[valid_mask]
+                tendl_yield = 0.0
+                for ch_xs, ch_mult in tendl_all_channels:
+                    ch_xs_e = np.array(sorted(ch_xs.keys()))
+                    ch_xs_v = np.array([ch_xs[e] for e in ch_xs_e])
+                    ch_mult_e = np.array(sorted(ch_mult.keys()))
+                    ch_mult_v = np.array([ch_mult[e] for e in ch_mult_e])
+                    ch_xs_cm2 = np.interp(
+                        e_steps_valid, ch_xs_e, ch_xs_v, left=0.0, right=0.0) * 1e-24
+                    ch_mult_interp = np.interp(
+                        e_steps_valid, ch_mult_e, ch_mult_v, left=0.0, right=0.0)
+                    prob = np.where(sp_valid > 1e-30,
+                                    ch_xs_cm2 * ch_mult_interp / sp_valid, 0.0)
+                    tendl_yield += float(np.sum(prob * de_valid))
+                if gamma_yield > 1e-30:
+                    scale = tendl_yield / gamma_yield
+                    gamma_lines = [[e, i * scale] for e, i in gamma_lines]
+                gamma_yield = tendl_yield
+        elif gamma_cascades is not None:
+            if (mt91_extra and gamma_cascades_extended is not None
+                    and cont_yield_steps is not None and np.any(cont_yield_steps > 0)):
+                extra_thresholds = np.array([th for _, th in mt91_extra])
+                E_s = e_steps_valid[:, np.newaxis]
+                mt91_accessible = E_s >= extra_thresholds[np.newaxis, :]
+                count_acc = np.maximum(mt91_accessible.sum(axis=1, keepdims=True), 1)
+                mt91_yield_extra = (
+                    cont_yield_steps[:, np.newaxis] * mt91_accessible / count_acc
+                )
+                combined_yield = np.concatenate([yield_matrix, mt91_yield_extra], axis=1)
+                combined_valid = np.concatenate([valid_physics, mt91_accessible], axis=1)
+                extended_levels = list(energy_levels) + [e for e, _ in mt91_extra]
+                gamma_yield, gamma_lines = Transport._calculate_gamma_spectrum(
+                    combined_yield,
+                    combined_valid,
+                    extended_levels,
+                    gamma_cascades_extended,
+                )
+            else:
+                gamma_yield, gamma_lines = Transport._calculate_gamma_spectrum(
+                    yield_matrix,
+                    valid_physics,
+                    energy_levels,
+                    gamma_cascades,
+                )
         else:
             gamma_yield, gamma_lines = 0.0, []
 
+        if secondary_gamma_channels and not use_tendl_primary:
+            e_steps_valid = e_alpha_steps[valid_mask]
+            de_valid = de[valid_mask]
+            sp_valid = sp_grid[valid_mask]
+            for ch_xs, ch_mult in secondary_gamma_channels:
+                ch_xs_e = np.array(sorted(ch_xs.keys()))
+                ch_xs_v = np.array([ch_xs[e] for e in ch_xs_e])
+                ch_mult_e = np.array(sorted(ch_mult.keys()))
+                ch_mult_v = np.array([ch_mult[e] for e in ch_mult_e])
+                ch_xs_cm2 = np.interp(
+                    e_steps_valid, ch_xs_e, ch_xs_v, left=0.0, right=0.0) * 1e-24
+                ch_mult_interp = np.interp(
+                    e_steps_valid, ch_mult_e, ch_mult_v, left=0.0, right=0.0)
+                prob = np.where(sp_valid > 1e-30,
+                                ch_xs_cm2 * ch_mult_interp / sp_valid, 0.0)
+                gamma_yield += float(np.sum(prob * de_valid))
+
         return (np.sum(spectrum), spectrum,
                 gamma_yield, gamma_lines)
+
+    @staticmethod
+    def _calculate_gamma_f02(
+            f02_mult,
+            f02_spectrum,
+            e_alpha_steps,
+            valid_mask,
+            de,
+            sp_grid,
+            cs_cm2_grid):
+        """Compute gamma yield and spectral lines using F02 photon-production data.
+
+        Integrates sigma_an(E) * mult(E) / stopping(E) * dE over the alpha
+        slowing-down grid, then distributes the yield across discrete gamma lines
+        drawn from the nearest F02 spectrum entry.
+
+        Args:
+            f02_mult: Dict mapping alpha energy in MeV to F02 photon multiplicity.
+            f02_spectrum: Dict mapping alpha energy in MeV to list of
+                          (gamma_energy_MeV, weight) pairs.
+            e_alpha_steps: Array of alpha energy bin centres in MeV.
+            valid_mask: Boolean array selecting bins with physical stopping data.
+            de: Array of energy step widths in MeV.
+            sp_grid: Stopping power array in MeV/(atoms/cm^2).
+            cs_cm2_grid: sigma_an cross section array in cm^2.
+
+        Returns:
+            Tuple of (gamma_yield, gamma_lines) where gamma_yield is the total
+            gammas per source alpha and gamma_lines is a list of
+            (energy_MeV, intensity) pairs.
+        """
+        mult_e = np.array(sorted(f02_mult.keys()))
+        mult_v = np.array([f02_mult[e] for e in mult_e])
+        sp_e = np.array(sorted(f02_spectrum.keys()))
+
+        if len(mult_e) == 0 or len(sp_e) == 0:
+            return 0.0, []
+
+        e_steps_valid = e_alpha_steps[valid_mask]
+        de_valid = de[valid_mask]
+        sp_valid = sp_grid[valid_mask]
+        xs_valid = cs_cm2_grid[valid_mask]
+
+        mult_valid = np.interp(e_steps_valid, mult_e, mult_v, left=0.0, right=mult_v[-1])
+        prob_gamma = np.where(sp_valid > 1e-30,
+                              xs_valid * mult_valid / sp_valid, 0.0)
+
+        gamma_lines_dict = defaultdict(float)
+
+        sp_idx = np.searchsorted(sp_e, e_steps_valid, side='right') - 1
+        sp_idx = np.clip(sp_idx, 0, len(sp_e) - 1)
+
+        for e_step, prob_g, de_step, idx in zip(
+                e_steps_valid, prob_gamma, de_valid, sp_idx):
+            if prob_g <= 0:
+                continue
+            lines = f02_spectrum[sp_e[idx]]
+            total_w = sum(w for _, w in lines)
+            if total_w <= 0:
+                continue
+            weight = prob_g * de_step
+            for e_gamma, w in lines:
+                if e_gamma > 0 and w > 0:
+                    gamma_lines_dict[round(e_gamma, 6)] += weight * (w / total_w)
+
+        gamma_lines = _gamma_line_pairs(sorted(gamma_lines_dict.items()))
+        gamma_yield = sum(intensity for _, intensity in gamma_lines)
+        return gamma_yield, gamma_lines
 
     @staticmethod
     def _calculate_gamma_spectrum(
@@ -642,12 +789,39 @@ class Transport(object):
                 continue
 
             gamma_cascades = None
+            f02_mult = None
+            f02_spectrum = None
+            secondary_channels = None
+            tendl_all_channels = None
+            use_tendl_primary = False
+            mt91_extra = None
+            gamma_cascades_extended = None
             if calculate_gammas:
-                gamma_cascades = get_gamma_cascade_info(
-                    product_zaid,
-                    data_dir=gamma_data_source,
-                    level_energies=level_energies
-                )
+                f02_result = get_f02_gamma_data(zaid, gamma_data_source)
+                if f02_result is not None:
+                    f02_mult, f02_spectrum = f02_result
+                    if tendl_is_primary_gamma_mode(zaid, f02_mult, an_xs_data):
+                        use_tendl_primary = True
+                        tendl_all_channels = get_tendl_all_gamma_channels(zaid) or None
+                    else:
+                        secondary_channels = get_secondary_gamma_channels(zaid) or None
+                else:
+                    gamma_cascades = get_gamma_cascade_info(
+                        product_zaid,
+                        data_dir=gamma_data_source,
+                        level_energies=level_energies
+                    )
+                    mt91_extra = get_mt91_extra_levels(
+                        zaid, q_value, level_energies, an_xs_data_source
+                    )
+                    if mt91_extra:
+                        extended_levels = list(level_energies) + [e for e, _ in mt91_extra]
+                        gamma_cascades_extended = get_gamma_cascade_info(
+                            product_zaid,
+                            data_dir=gamma_data_source,
+                            level_energies=extended_levels
+                        )
+                    secondary_channels = get_secondary_gamma_channels(zaid) or None
 
             continuum_xs_data, continuum_dist_data = get_continuum_info(
                 zaid, an_xs_data_source)
@@ -663,6 +837,13 @@ class Transport(object):
                 'branching_data': branching_data,
                 'energy_keys': sorted(branching_data.keys()),
                 'gamma_cascades': gamma_cascades,
+                'mt91_extra': mt91_extra,
+                'gamma_cascades_extended': gamma_cascades_extended,
+                'f02_mult': f02_mult,
+                'f02_spectrum': f02_spectrum,
+                'secondary_gamma_channels': secondary_channels,
+                'use_tendl_primary': use_tendl_primary,
+                'tendl_all_channels': tendl_all_channels,
                 'continuum_xs': continuum_xs_data,
                 'continuum_dist': continuum_dist_data,
             })
@@ -712,6 +893,13 @@ class Transport(object):
                 gamma_cascades=t_data['gamma_cascades'] if calculate_gammas else None,
                 continuum_xs=t_data.get('continuum_xs'),
                 continuum_dist=t_data.get('continuum_dist'),
+                f02_mult=t_data.get('f02_mult') if calculate_gammas else None,
+                f02_spectrum=t_data.get('f02_spectrum') if calculate_gammas else None,
+                mt91_extra=t_data.get('mt91_extra') if calculate_gammas else None,
+                gamma_cascades_extended=t_data.get('gamma_cascades_extended') if calculate_gammas else None,
+                secondary_gamma_channels=t_data.get('secondary_gamma_channels') if calculate_gammas else None,
+                use_tendl_primary=t_data.get('use_tendl_primary', False) if calculate_gammas else False,
+                tendl_all_channels=t_data.get('tendl_all_channels') if calculate_gammas else None,
             )
             return {
                 'p': p * scale,
