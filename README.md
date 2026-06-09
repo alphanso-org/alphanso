@@ -335,13 +335,12 @@ If you use ALPHANSO in your research, please cite:
 
 ```bibtex
 @article{rawal2026alphanso,
-  title     = {{ALPHANSO}: Open-Source Modeling of ($\alpha$,n) Neutron Source Terms},
-  author    = {Rawal, Divit and Nelson, Anthony J. and Zywiec, William and Siefman, Daniel},
-  year      = {2026},
-  eprint    = {2603.17719},
-  archivePrefix = {arXiv},
-  primaryClass  = {physics.comp-ph},
-  note      = {Submitted to Nuclear Instruments and Methods in Physics Research Section A}
+  title = {ALPHANSO: Open-source modeling of ($\alpha$, n) neutron source terms},
+  journal = {Nuclear Instruments and Methods in Physics Research Section A: Accelerators, Spectrometers, Detectors and Associated Equipment},
+  year = {2026},
+  pages = {171713},
+  doi = {10.1016/j.nima.2026.171713},
+  url = {https://www.sciencedirect.com/science/article/pii/S0168900226004390?via%3Dihub}
 }
 ```
 
