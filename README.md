@@ -335,7 +335,7 @@ If you use ALPHANSO in your research, please cite:
 
 ```bibtex
 @article{rawal2026alphanso,
-  title = {ALPHANSO: Open-source modeling of ($\alphas$, n) neutron source terms},
+  title = {ALPHANSO: Open-source modeling of ($\alpha$, n) neutron source terms},
   journal = {Nuclear Instruments and Methods in Physics Research Section A: Accelerators, Spectrometers, Detectors and Associated Equipment},
   year = {2026},
   pages = {171713},
