@@ -3029,7 +3029,6 @@ def get_f02_gamma_data(
 _AN_PRIMARY_MTS = frozenset(
     [2, 4, 5, 11, 91, 201]
     + list(range(50, 92))
-    + list(range(16, 46))
 )
 
 
@@ -3156,10 +3155,13 @@ def _load_tendl_gamma_channels(
 def get_secondary_gamma_channels(
         target_zaid: int,
 ) -> List[Tuple[Dict[float, float], Dict[float, float]]]:
-    """Return TENDL gamma channels that are NOT part of the primary (alpha,n) calculation.
+    """Return TENDL gamma channels that are NOT covered by the primary F02*sigma_an calculation.
 
-    Excludes MTs in _AN_PRIMARY_MTS (elastic, (alpha,n) levels, and all neutron-
-    producing channels) to avoid double-counting with the F02*sigma_an yield.
+    Excludes MTs in _AN_PRIMARY_MTS: elastic (MT=2), (alpha,n) channels already
+    captured by F02 (MT=4, 50-91), and MT=5/11/201 bookkeeping entries.
+    All other reaction channels — including mixed neutron+gamma channels such as
+    (alpha,na) MT=22, (alpha,np) MT=28, (alpha,2n) MT=16 — are included, since
+    their gamma yields are not present in the F02 data.
 
     Args:
         target_zaid: ZAID in ZZZAAA format.

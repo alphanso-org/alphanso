@@ -512,21 +512,29 @@ class Transport(object):
             gamma_yield, gamma_lines = 0.0, []
 
         if secondary_gamma_channels and not use_tendl_primary:
-            e_steps_valid = e_alpha_steps[valid_mask]
-            de_valid = de[valid_mask]
-            sp_valid = sp_grid[valid_mask]
+            secondary_mask = sp_grid > 1e-30
+            e_steps_sec = e_alpha_steps[secondary_mask]
+            de_sec = de[secondary_mask]
+            sp_sec = sp_grid[secondary_mask]
+            secondary_yield = 0.0
             for ch_xs, ch_mult in secondary_gamma_channels:
                 ch_xs_e = np.array(sorted(ch_xs.keys()))
                 ch_xs_v = np.array([ch_xs[e] for e in ch_xs_e])
                 ch_mult_e = np.array(sorted(ch_mult.keys()))
                 ch_mult_v = np.array([ch_mult[e] for e in ch_mult_e])
                 ch_xs_cm2 = np.interp(
-                    e_steps_valid, ch_xs_e, ch_xs_v, left=0.0, right=0.0) * 1e-24
+                    e_steps_sec, ch_xs_e, ch_xs_v, left=0.0, right=0.0) * 1e-24
                 ch_mult_interp = np.interp(
-                    e_steps_valid, ch_mult_e, ch_mult_v, left=0.0, right=0.0)
-                prob = np.where(sp_valid > 1e-30,
-                                ch_xs_cm2 * ch_mult_interp / sp_valid, 0.0)
-                gamma_yield += float(np.sum(prob * de_valid))
+                    e_steps_sec, ch_mult_e, ch_mult_v, left=0.0, right=0.0)
+                prob = np.where(sp_sec > 1e-30,
+                                ch_xs_cm2 * ch_mult_interp / sp_sec, 0.0)
+                secondary_yield += float(np.sum(prob * de_sec))
+            if secondary_yield > 0.0:
+                new_total = gamma_yield + secondary_yield
+                if gamma_lines and gamma_yield > 1e-30:
+                    scale = new_total / gamma_yield
+                    gamma_lines = [[e, i * scale] for e, i in gamma_lines]
+                gamma_yield = new_total
 
         return (np.sum(spectrum), spectrum,
                 gamma_yield, gamma_lines)
