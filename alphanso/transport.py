@@ -74,6 +74,26 @@ def _reverse_spectrum_results(results: dict) -> dict:
     return results
 
 
+def _accumulate_secondary_gamma_yield(channels, e_alpha_steps, de, sp_grid):
+    sm = sp_grid > 1e-30
+    if not np.any(sm):
+        return 0.0
+    e_sec = e_alpha_steps[sm]
+    de_sec = de[sm]
+    sp_sec = sp_grid[sm]
+    total = 0.0
+    for ch_xs, ch_mult in channels:
+        cxe = np.array(sorted(ch_xs.keys()))
+        cxv = np.array([ch_xs[e] for e in cxe])
+        cme = np.array(sorted(ch_mult.keys()))
+        cmv = np.array([ch_mult[e] for e in cme])
+        xs_cm2 = np.interp(e_sec, cxe, cxv, left=0.0, right=0.0) * 1e-24
+        mult = np.interp(e_sec, cme, cmv, left=0.0, right=0.0)
+        prob = np.where(sp_sec > 1e-30, xs_cm2 * mult / sp_sec, 0.0)
+        total += float(np.sum(prob * de_sec))
+    return total
+
+
 def _gamma_line_pairs(line_items) -> list:
     """Convert gamma line pairs to built-in list pairs."""
     return [
@@ -343,7 +363,11 @@ class Transport(object):
         valid_mask = (sp_grid > 1e-30) & (cs_cm2_grid > 0)
 
         if not np.any(valid_mask):
-            return 0.0, spectrum, 0.0, []
+            sec = 0.0
+            if secondary_gamma_channels and not use_tendl_primary:
+                sec = _accumulate_secondary_gamma_yield(
+                    secondary_gamma_channels, e_alpha_steps, de, sp_grid)
+            return 0.0, spectrum, sec, []
 
         e_steps_valid = e_alpha_steps[valid_mask]
         de_valid = de[valid_mask]
@@ -427,7 +451,11 @@ class Transport(object):
         width_matrix[width_matrix <= 0] = 1e-30
 
         if not np.any(valid_physics):
-            return 0.0, spectrum, 0.0, []
+            sec = 0.0
+            if secondary_gamma_channels and not use_tendl_primary:
+                sec = _accumulate_secondary_gamma_yield(
+                    secondary_gamma_channels, e_alpha_steps, de, sp_grid)
+            return 0.0, spectrum, sec, []
 
         y_flat = yield_matrix[valid_physics]
         w_flat = width_matrix[valid_physics]
@@ -512,24 +540,8 @@ class Transport(object):
             gamma_yield, gamma_lines = 0.0, []
 
         if secondary_gamma_channels and not use_tendl_primary:
-            secondary_mask = sp_grid > 1e-30
-            e_steps_sec = e_alpha_steps[secondary_mask]
-            de_sec = de[secondary_mask]
-            sp_sec = sp_grid[secondary_mask]
-            secondary_yield = 0.0
-            for ch_xs, ch_mult in secondary_gamma_channels:
-                ch_xs_e = np.array(sorted(ch_xs.keys()))
-                ch_xs_v = np.array([ch_xs[e] for e in ch_xs_e])
-                ch_mult_e = np.array(sorted(ch_mult.keys()))
-                ch_mult_v = np.array([ch_mult[e] for e in ch_mult_e])
-                ch_xs_cm2 = np.interp(
-                    e_steps_sec, ch_xs_e, ch_xs_v, left=0.0, right=0.0) * 1e-24
-                ch_mult_interp = np.interp(
-                    e_steps_sec, ch_mult_e, ch_mult_v, left=0.0, right=0.0)
-                prob = np.where(sp_sec > 1e-30,
-                                ch_xs_cm2 * ch_mult_interp / sp_sec, 0.0)
-                secondary_yield += float(np.sum(prob * de_sec))
-            gamma_yield += secondary_yield
+            gamma_yield += _accumulate_secondary_gamma_yield(
+                secondary_gamma_channels, e_alpha_steps, de, sp_grid)
 
         return (np.sum(spectrum), spectrum,
                 gamma_yield, gamma_lines)

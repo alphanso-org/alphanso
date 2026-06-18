@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "generated_at": "2026-06-17T21:50:37.826165",
+    "generated_at": "2026-06-17T22:04:51.984522",
     "calc_type": "sandwich",
     "num_configs": 10,
     "notes": "Ground truth generated from validated implementation"
@@ -4280,10 +4280,10 @@
           0.0
         ]
       ],
-      "gamma_yield": 1027482.7317420944,
+      "gamma_yield": 1027482.7317627055,
       "gamma_yield_target": 211725.84482585549,
       "gamma_yield_layers": [
-        815756.8869162389
+        815756.88693685
       ],
       "gamma_lines_target": [
         [
@@ -5950,8 +5950,8 @@
           0.0
         ]
       ],
-      "gamma_yield": 8.941420335889282e-06,
-      "gamma_yield_target": 2.912880840527234e-06,
+      "gamma_yield": 8.94142033675483e-06,
+      "gamma_yield_target": 2.9128808413927814e-06,
       "gamma_yield_layers": [
         6.028539495362048e-06
       ],

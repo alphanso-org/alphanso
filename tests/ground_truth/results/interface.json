@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "generated_at": "2026-06-17T21:50:09.978315",
+    "generated_at": "2026-06-17T22:04:24.257881",
     "calc_type": "interface",
     "num_configs": 5,
     "notes": "Ground truth generated from validated implementation"
@@ -1338,7 +1338,7 @@
         14.85,
         15.0
       ],
-      "gamma_yield": 0.24530358538998517,
+      "gamma_yield": 0.24530358542567451,
       "gamma_lines": [
         [
           0.610557,
