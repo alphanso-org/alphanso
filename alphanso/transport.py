@@ -529,12 +529,7 @@ class Transport(object):
                 prob = np.where(sp_sec > 1e-30,
                                 ch_xs_cm2 * ch_mult_interp / sp_sec, 0.0)
                 secondary_yield += float(np.sum(prob * de_sec))
-            if secondary_yield > 0.0:
-                new_total = gamma_yield + secondary_yield
-                if gamma_lines and gamma_yield > 1e-30:
-                    scale = new_total / gamma_yield
-                    gamma_lines = [[e, i * scale] for e, i in gamma_lines]
-                gamma_yield = new_total
+            gamma_yield += secondary_yield
 
         return (np.sum(spectrum), spectrum,
                 gamma_yield, gamma_lines)
