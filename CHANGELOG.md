@@ -10,6 +10,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - MT=91 continuum (alpha,n) channel support: cross sections and tabulated neutron energy distributions are parsed from GNDS XML files and folded into yield and spectrum calculations
 - Kinematic box fallback for continuum channel when no tabulated neutron energy distribution is available
+- New alpha-induced gamma source-term calculation (`alphanso/gamma_production.py`), a
+  deterministic re-implementation of the Geant4 ParticleHP final-state sampling used by
+  SaG4n on the JENDL/AN-2005 based JENDLTENDL01 library, with energy-conservation
+  guards. Gamma production is evaluated on the same alpha slowing-down grid as the
+  (alpha,n) calculation and covers discrete (alpha,n_i) residual de-excitation, the
+  lumped MT=91 continuum, multi-particle channels ((alpha,2n), (alpha,n+p),
+  (alpha,n+alpha), ...) and explicit TENDL photon-production products
+- New `gamma/` nuclear-data subtree (data-v1.3.0): JENDL/AN-2005 exit-channel files in
+  Geant4 ParticleHP format for 17 light targets, TENDL-2017 channel files for Z <= 30,
+  and G4NDL 4.7 residual level schemes (`Gammas/z{Z}.a{A}`)
+- Gamma outputs validated against SaG4n (Geant4 11.2.2, JENDLTENDL01) for Li-6, Li-7,
+  Be-9, B-10, B-11, C-13, O-17 and O-18 at 1-10 MeV: gamma-per-neutron agreement within
+  ~5% for all cases dominated by physical (energy-conserving) emission
+- `gamma_yield`/`gamma_lines` are now asserted by the integration test suite, and a
+  dedicated test module covers the level-scheme cascade math and channel parsing
+
+### Changed
+
+- `calculate_gammas` now defaults to `True` in `Transport.beam_problem` and
+  `Transport.homogeneous_problem` (already the default in `Transport.calculate`)
+- The RIPL-3/ENDF gamma-cascade pipeline in `transport.py` has been replaced by the
+  new data-driven source term (known defects of the old path: JENDL level-scheme
+  ceiling, zero yield for particle-unbound residuals, unphysical E0/K-forbidden
+  branches)
+- Nuclear data version bumped to 1.3.0 (adds the `gamma/` subtree; the release
+  tarball checksum must be filled in `data_manager._EXPECTED_SHA256` on upload)
 
 ## [1.0.1] - 2026-03-27
 
