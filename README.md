@@ -16,7 +16,7 @@ Applications include reactor design, nuclear safeguards, radioactive waste manag
 
 - **Multiple Geometry Types**: Beam, homogeneous, interface, and sandwich configurations
 - **Accurate Physics**: Up-to-date nuclear data with customizable data sources
-- **Complete Output**: Neutron yields and energy spectra
+- **Complete Output**: Neutron yields and energy spectra, plus the alpha-induced prompt gamma source term (yields and discrete lines, validated against SaG4n/Geant4)
 - **Command-Line & Python API**: Use via CLI or integrate into Python workflows
 
 ## Installation

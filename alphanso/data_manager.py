@@ -26,9 +26,8 @@ _RELEASE_URL = (
     f"data-v{DATA_VERSION}/alphanso-data-v{DATA_VERSION}.tar.gz"
 )
 
-# Filled after tarball creation (see release sequence in plan).
-# NOTE: must be updated when the data-v1.3.0 release asset is uploaded.
-_EXPECTED_SHA256 = ""
+# SHA-256 of alphanso-data-v1.3.0.tar.gz (must match the release asset)
+_EXPECTED_SHA256 = "24cdaf931fb09e2c245e64c7f3d7eb6e692e765e4428b46a44bdfd8a03b41710"
 
 _REQUIRED_SUBDIRS = ["an_xs", "decay", "delayed_neutron", "levels", "stopping", "gamma"]
 

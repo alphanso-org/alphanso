@@ -37,11 +37,12 @@ For a target nuclide the library provides a set of exit channels under
     the evaluated Q-value, which correctly suppresses these channels near
     threshold.
 
-``F02`` photon-production files: targets evaluated with explicit photon data
-    (JENDL: F-19, Na-23, Al-27, Si-28/29/30) carry MF12/13 photon
-    multiplicities with MF14/15 line and continuum spectra; TENDL-derived
-    ``.z`` files carry an inclusive MF6 representation with an explicit
-    photon product.  Both are integrated as additional gamma channels.
+``F02`` inclusive (n,X) channels: JENDL targets evaluated without discrete
+    channels (F-19, Na-23, Al-27, Si-28/29/30) carry the channel cross section
+    and the neutron MF6 distribution; the residual (taken as the physical
+    target+alpha-n nucleus) de-excites through the level walk.  TENDL-derived
+    ``.z`` files additionally carry an explicit photon product (multiplicity
+    plus discrete/continuum spectra), which is integrated directly.
 
 Cascade expectation values
 --------------------------
@@ -171,6 +172,8 @@ class _TokenStream:
         return float(self._next())
 
     def skip(self, count: int) -> None:
+        if count < 0:
+            raise ValueError(f"Negative skip count in {self._path}")
         self._i += count
         if self._i > len(self._t):
             raise ValueError(f"Unexpected end of data in {self._path}")
@@ -216,7 +219,7 @@ class LevelScheme:
         rows[:, 0] *= 1e-3  # keV -> MeV
         rows[:, 1] *= 1e-3
 
-        eps = 1e-8  # 0.01 keV grouping tolerance, as in G4
+        eps = 1e-5  # 0.01 keV grouping/matching tolerance, as in G4
         level_energies: List[float] = []
         gamma_rows: List[List[Tuple[float, float]]] = []
         current = None
@@ -280,11 +283,14 @@ class LevelScheme:
         """
         if level_idx in self._expected_cache:
             return self._expected_cache[level_idx]
-        # Iterative resolution to protect against malformed (cyclic) data.
         self._expected_cache[level_idx] = self._expected_lines_impl(level_idx, frozenset())
         return self._expected_cache[level_idx]
 
     def _expected_lines_impl(self, level_idx: int, visiting: frozenset) -> Dict[float, float]:
+        # The visiting set protects against malformed (cyclic) data; completed
+        # levels are memoized, keeping the recursion linear in scheme size.
+        if level_idx in self._expected_cache:
+            return self._expected_cache[level_idx]
         if level_idx in visiting:
             logger.warning("Cyclic gamma cascade detected at level %d; truncating", level_idx)
             return {}
@@ -310,7 +316,9 @@ class LevelScheme:
                 for e_next, i_next in self._expected_lines_impl(
                         nxt, visiting | {level_idx}).items():
                     out[e_next] += p * i_next
-        return dict(out)
+        result = dict(out)
+        self._expected_cache[level_idx] = result
+        return result
 
 
 class _MF6Product:
@@ -329,7 +337,8 @@ class _MF6Product:
         self.yield_v = yield_v
         self.mean_e_in = mean_e_in    # MeV, incident grid of the energy distribution
         self.mean_e_out = mean_e_out  # MeV, mean outgoing energy at each incident point
-        # law-1 spectra: [(E_in_MeV, e_out_MeV[], pdf_per_MeV[]), ...]
+        # law-1 spectra per incident-energy panel:
+        # [(E_in_MeV, disc_e_MeV[], disc_prob[], cont_e_MeV[], cont_pdf_per_MeV[]), ...]
         self.spectra = spectra
 
     def multiplicity(self, e: np.ndarray) -> np.ndarray:
@@ -512,9 +521,8 @@ class GammaChannel:
         self.products: List[_MF6Product] = []
         self.walk_cache: Dict[int, Dict[float, float]] = {}
         # photon-data
-        self.photon_lines_by_e: Optional[List[Tuple[float, Dict[float, float]]]] = None
         self.photon_multiplicity: Optional[Tuple[np.ndarray, np.ndarray]] = None
-        self.photon_spectra: Optional[List[Tuple[float, np.ndarray, np.ndarray]]] = None
+        self.photon_spectra: Optional[list] = None
 
     def cross_section(self, e: np.ndarray) -> np.ndarray:
         return np.interp(e, self.xs_e, self.xs_v, left=0.0, right=0.0)
@@ -689,14 +697,19 @@ def get_gamma_target_data(zaid: int, gamma_data_root: str) -> Optional[GammaTarg
     return _get_gamma_target_data_cached(int(zaid), os.path.abspath(gamma_data_root))
 
 
+_warned_missing_roots = set()
+
+
 @lru_cache(maxsize=None)
 def _get_gamma_target_data_cached(zaid: int, root: str) -> Optional[GammaTargetData]:
     z, a = zaid // 1000, zaid % 1000
     inelastic = os.path.join(root, 'Alpha', 'Inelastic')
     gammas_dir = os.path.join(root, 'Gammas')
     if not os.path.isdir(inelastic):
-        logger.warning("Gamma data directory %s not found; gamma production "
-                       "disabled for ZAID %d", inelastic, zaid)
+        if root not in _warned_missing_roots:
+            _warned_missing_roots.add(root)
+            logger.warning("Gamma data directory %s not found; gamma "
+                           "production disabled", inelastic)
         return None
 
     channels: List[GammaChannel] = []
@@ -845,3 +858,4 @@ def clear_caches() -> None:
     """Drop all cached parsed data (for tests)."""
     _get_gamma_target_data_cached.cache_clear()
     _load_level_scheme.cache_clear()
+    _warned_missing_roots.clear()

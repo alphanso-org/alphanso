@@ -9,7 +9,6 @@ gamma source-term validation report).
 
 import os
 
-import numpy as np
 import pytest
 
 from alphanso import gamma_production as gp

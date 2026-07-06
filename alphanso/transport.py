@@ -142,7 +142,7 @@ class Transport(object):
                 - neutron_energy_bins: ndarray, optional - Neutron energy grid
                 - an_xs_data_dir, stopping_power_data_dir: str, optional
                 - calculate_gammas: bool, optional - Enable gamma calculation (default: True)
-                - gamma_data_dir: str, optional - Gamma cascade data directory
+                - gamma_data_dir: str, optional - Gamma-production data root
 
         Returns:
             dict - Results containing:
@@ -532,35 +532,34 @@ class Transport(object):
             total_gamma_yield = 0.0
             total_gamma_lines = defaultdict(float)
 
+        def _gamma_only_entry(zaid, afrac, gamma_target):
+            """Target entry for a nuclide with gamma data but no usable
+            (alpha,n) neutron data."""
+            return {
+                'zaid': zaid,
+                'afrac': afrac,
+                'an_xs_binned': None,
+                'target_mass_amu': None,
+                'product_mass': None,
+                'q_value': 0.0,
+                'level_energies': [],
+                'branching_data': {},
+                'energy_keys': [],
+                'gamma_target': gamma_target,
+                'continuum_xs': None,
+                'continuum_dist': None,
+            }
+
         target_data_list = []
         for zaid, afrac in atom_fractions.items():
             gamma_target = None
             if calculate_gammas:
                 gamma_target = get_gamma_target_data(zaid, gamma_data_root)
 
-            def _gamma_only_entry():
-                if gamma_target is None:
-                    return None
-                return {
-                    'zaid': zaid,
-                    'afrac': afrac,
-                    'an_xs_binned': None,
-                    'target_mass_amu': None,
-                    'product_mass': None,
-                    'q_value': 0.0,
-                    'level_energies': [],
-                    'branching_data': {},
-                    'energy_keys': [],
-                    'gamma_target': gamma_target,
-                    'continuum_xs': None,
-                    'continuum_dist': None,
-                }
-
             an_xs_data = get_an_xs(zaid, an_xs_data_source)
             if an_xs_data is None:
-                entry = _gamma_only_entry()
-                if entry is not None:
-                    target_data_list.append(entry)
+                if gamma_target is not None:
+                    target_data_list.append(_gamma_only_entry(zaid, afrac, gamma_target))
                 continue
 
             an_xs_binned = rebin_xs(an_xs_data, ebins)
@@ -569,9 +568,8 @@ class Transport(object):
             if target_mass_amu is None:
                 logger.warning(
                     f"Target mass not found for ZAID {zaid}. Skipping this target.")
-                entry = _gamma_only_entry()
-                if entry is not None:
-                    target_data_list.append(entry)
+                if gamma_target is not None:
+                    target_data_list.append(_gamma_only_entry(zaid, afrac, gamma_target))
                 continue
 
             z = zaid // 1000
@@ -581,9 +579,8 @@ class Transport(object):
             if product_mass is None:
                 logger.warning(
                     f"Product mass not found for ZAID {product_zaid}. Skipping this target.")
-                entry = _gamma_only_entry()
-                if entry is not None:
-                    target_data_list.append(entry)
+                if gamma_target is not None:
+                    target_data_list.append(_gamma_only_entry(zaid, afrac, gamma_target))
                 continue
 
             q_value, level_energies, branching_data = get_branching_info(
@@ -592,9 +589,8 @@ class Transport(object):
                     level_energies) == 0:
                 logger.warning(
                     f"No branching data available for target ZAID {zaid}. Skipping this target.")
-                entry = _gamma_only_entry()
-                if entry is not None:
-                    target_data_list.append(entry)
+                if gamma_target is not None:
+                    target_data_list.append(_gamma_only_entry(zaid, afrac, gamma_target))
                 continue
 
             continuum_xs_data, continuum_dist_data = get_continuum_info(
