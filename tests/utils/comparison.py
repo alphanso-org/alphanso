@@ -126,6 +126,41 @@ def compare_yield_list(
     return all_pass, "; ".join(messages)
 
 
+def compare_gamma_lines(
+    actual: List[List[float]],
+    expected: List[List[float]],
+    rel_tol: float = YIELD_REL_TOL,
+    abs_tol: float = YIELD_ABS_TOL,
+    name: str = "gamma_lines"
+) -> Tuple[bool, str]:
+    """
+    Compare discrete gamma line lists [[energy_MeV, intensity], ...].
+
+    Line energies must match exactly by position after sorting; intensities
+    are compared with the scalar yield tolerance.
+    """
+    if expected is None and actual is None:
+        return True, f"{name}: both None (OK)"
+    if expected is None or actual is None:
+        return False, f"{name}: None mismatch"
+
+    if len(actual) != len(expected):
+        return False, f"{name}: line count mismatch ({len(actual)} vs {len(expected)})"
+
+    all_pass = True
+    worst = ""
+    for (ea, ia), (ee, ie) in zip(sorted(actual), sorted(expected)):
+        if abs(ea - ee) > 1e-6:
+            return False, f"{name}: line energy mismatch ({ea} vs {ee})"
+        passed, msg = compare_scalar(ia, ie, rel_tol, abs_tol, f"{name}[{ee:.4f} MeV]")
+        if not passed:
+            all_pass = False
+            worst = msg
+    if all_pass:
+        return True, f"{name}: {len(expected)} lines match (OK)"
+    return False, worst
+
+
 def compare_results(actual: dict, expected: dict, calc_type: str) -> Tuple[bool, List[str]]:
     """
     Compare full result dictionaries based on calculation type.
@@ -152,6 +187,19 @@ def compare_results(actual: dict, expected: dict, calc_type: str) -> Tuple[bool,
     messages.append(msg)
     all_passed &= passed
 
+    # Gamma outputs (produced by beam and homogeneous calculations)
+    if 'gamma_yield' in expected:
+        passed, msg = compare_scalar(
+            actual.get('gamma_yield'), expected.get('gamma_yield'), name='gamma_yield')
+        messages.append(msg)
+        all_passed &= passed
+
+    if 'gamma_lines' in expected:
+        passed, msg = compare_gamma_lines(
+            actual.get('gamma_lines'), expected.get('gamma_lines'))
+        messages.append(msg)
+        all_passed &= passed
+
     # Homogeneous-specific fields
     if calc_type == 'homogeneous':
         for field in ['sf_yield', 'combined_yield']:
@@ -165,6 +213,18 @@ def compare_results(actual: dict, expected: dict, calc_type: str) -> Tuple[bool,
                 passed, msg = compare_spectrum(
                     actual.get(field), expected.get(field), name=field
                 )
+                messages.append(msg)
+                all_passed &= passed
+
+        for field in ['delayedn_strength']:
+            if field in expected:
+                passed, msg = compare_scalar(actual.get(field), expected.get(field), name=field)
+                messages.append(msg)
+                all_passed &= passed
+
+        for field in ['delayedn_spectrum']:
+            if field in expected:
+                passed, msg = compare_spectrum(actual.get(field), expected.get(field), name=field)
                 messages.append(msg)
                 all_passed &= passed
 

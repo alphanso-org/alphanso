@@ -9,6 +9,7 @@ from collections import defaultdict
 from typing import Optional, Dict, Tuple, List
 from scipy.interpolate import interp1d
 
+from .data_manager import get_data_dir
 from .sources_parsers import (
     get_sources_an_xs,
     get_sources_stopping_power,
@@ -25,49 +26,58 @@ logger = logging.getLogger(__name__)
 def _default_data_root():
     return str(get_data_dir())
 
-def _load_sources_overrides():
-    """Load the sources_overrides.yaml configuration file."""
+def _load_data_overrides():
+    """Load the data_overrides.yaml configuration file."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    overrides_path = os.path.join(current_dir, "data", "sources_overrides.yaml")
+    overrides_path = os.path.join(current_dir, "data", "data_overrides.yaml")
 
     if os.path.exists(overrides_path):
         try:
             with open(overrides_path, 'r') as f:
                 return yaml.safe_load(f)
         except Exception as e:
-            logger.warning(f"Failed to load sources_overrides.yaml: {e}")
+            logger.warning(f"Failed to load data_overrides.yaml: {e}")
             return None
     return None
 
 
-_SOURCES_OVERRIDES = _load_sources_overrides()
+_DATA_OVERRIDES = _load_data_overrides()
 
 
 def _should_use_sources_for_an_xs(zaid: int) -> bool:
     """Check if a ZAID should use SOURCES data for (alpha,n) cross sections."""
-    if _SOURCES_OVERRIDES is None:
+    if _DATA_OVERRIDES is None:
         return False
 
-    use_sources_zaids = _SOURCES_OVERRIDES.get('an_xs', {}).get('use_sources_tape_zaids', [])
+    use_sources_zaids = _DATA_OVERRIDES.get('an_xs', {}).get('use_sources_tape_zaids', [])
     return zaid in use_sources_zaids
+
+
+def _should_use_tendl_for_an_xs(zaid: int) -> bool:
+    """Check if a ZAID should use TENDL instead of JENDL for (alpha,n) cross sections."""
+    if _DATA_OVERRIDES is None:
+        return False
+
+    use_tendl_zaids = _DATA_OVERRIDES.get('an_xs', {}).get('use_tendl_zaids', [])
+    return zaid in use_tendl_zaids
 
 
 def _should_use_sources_for_stopping(zaid: int) -> bool:
     """Check if a ZAID should use SOURCES data for stopping power."""
-    if _SOURCES_OVERRIDES is None:
+    if _DATA_OVERRIDES is None:
         return False
 
     z = zaid // 1000
-    default_z_threshold = _SOURCES_OVERRIDES.get('stopping', {}).get('default_sources_for_z_gt', 999)
+    default_z_threshold = _DATA_OVERRIDES.get('stopping', {}).get('default_sources_for_z_gt', 999)
     return z > default_z_threshold
 
 
 def _get_sources_an_xs_dir() -> Optional[str]:
     """Get the directory for SOURCES (alpha,n) cross section data."""
-    if _SOURCES_OVERRIDES is None:
+    if _DATA_OVERRIDES is None:
         return None
 
-    tape_path = _SOURCES_OVERRIDES.get('an_xs', {}).get('tape')
+    tape_path = _DATA_OVERRIDES.get('an_xs', {}).get('tape')
     if tape_path:
         return os.path.join(_default_data_root(), os.path.dirname(tape_path))
     return None
@@ -75,10 +85,10 @@ def _get_sources_an_xs_dir() -> Optional[str]:
 
 def _get_sources_stopping_dir() -> Optional[str]:
     """Get the directory for SOURCES stopping power data."""
-    if _SOURCES_OVERRIDES is None:
+    if _DATA_OVERRIDES is None:
         return None
 
-    tape_path = _SOURCES_OVERRIDES.get('stopping', {}).get('tape')
+    tape_path = _DATA_OVERRIDES.get('stopping', {}).get('tape')
     if tape_path:
         return os.path.join(_default_data_root(), os.path.dirname(tape_path))
     return None
@@ -92,6 +102,59 @@ def _get_endf_filename(zaid: int) -> str:
     symbol = atomic_data.get_element_symbol(z)
 
     return f"a-{z:03d}_{symbol}_{a:03d}.endf.gnds.xml"
+
+
+def _find_gnds_xml(zaid: int, data_dir: Optional[os.PathLike]) -> Optional[str]:
+    """Return the path to the GNDS XML file for zaid, or None if not found.
+
+    Handles default ENDF/JENDL/TENDL directory layouts and TENDL filename variants.
+
+    Args:
+        zaid: ZAID in ZZZAAA format
+        data_dir: Directory to search. None uses the default ENDF/JENDL/TENDL hierarchy.
+
+    Returns:
+        Absolute path to the first matching file, or None.
+    """
+    z = zaid // 1000
+    a = zaid % 1000
+    symbol = atomic_data.get_element_symbol(z)
+
+    if data_dir is None:
+        data_root = _default_data_root()
+        if _should_use_tendl_for_an_xs(zaid):
+            candidates = [
+                os.path.join(data_root, 'an_xs', "TENDL", f'{zaid}.xml'),
+            ]
+        else:
+            candidates = [
+                os.path.join(data_root, 'an_xs', "ENDF", _get_endf_filename(zaid)),
+                os.path.join(data_root, 'an_xs', "JENDL", f'{zaid}.xml'),
+                os.path.join(data_root, 'an_xs', "TENDL", f'{zaid}.xml'),
+            ]
+    else:
+        try:
+            data_dir_str = str(data_dir).lower()
+        except (TypeError, AttributeError):
+            data_dir_str = str(data_dir)
+        if "tendl-" in data_dir_str or "tendl" in data_dir_str:
+            candidates = [
+                os.path.join(data_dir, f"a-{symbol}{a:03d}.tendl.gnds.xml"),
+                os.path.join(data_dir, f"a_{z:03d}-{symbol}-{a:03d}.xml"),
+                os.path.join(data_dir, f"{symbol.upper()}{a:03d}.xml"),
+                os.path.join(data_dir, f"{symbol.capitalize()}{a:03d}.xml"),
+                os.path.join(data_dir, f"{symbol}{a:03d}.xml"),
+                os.path.join(data_dir, f"{zaid}.xml"),
+            ]
+        elif "endf" in data_dir_str:
+            candidates = [os.path.join(data_dir, _get_endf_filename(zaid))]
+        else:
+            candidates = [os.path.join(data_dir, f'{zaid}.xml')]
+
+    for cand in candidates:
+        if os.path.exists(cand):
+            return cand
+    return None
 
 
 def get_an_xs(
@@ -123,77 +186,42 @@ def get_an_xs(
     if data_dir is None and _should_use_sources_for_an_xs(zaid):
         sources_dir = _get_sources_an_xs_dir()
         if sources_dir:
-            logger.info(f"Using SOURCES data for ZAID {zaid} based on sources_overrides.yaml")
+            logger.info(f"Using SOURCES data for ZAID {zaid} based on data_overrides.yaml")
             return get_sources_an_xs(z, a, symbol, sources_dir)
 
     if data_dir == "sources" or (data_dir is not None and "sources" in str(
             data_dir)):
         return get_sources_an_xs(z, a, symbol, data_dir)
 
-    if data_dir is None:
-        data_root = _default_data_root()
-        endf_filename = _get_endf_filename(zaid)
-        endf_path = os.path.join(
-            data_root, "an_xs", "ENDF", endf_filename)
-        if os.path.exists(endf_path):
-            return _get_an_xs_xml(endf_path)
-        else:
-            jendl_filename = f"{zaid}.xml"
-            jendl_path = os.path.join(
-                data_root, "an_xs", "JENDL", jendl_filename)
-            if os.path.exists(jendl_path):
-                return _get_an_xs_xml(jendl_path)
-            else:
-                tendl_path = os.path.join(
-                    data_root, "an_xs", "TENDL", jendl_filename)
-                if os.path.exists(tendl_path):
-                    return _get_an_xs_xml(tendl_path)
-                else:
-                    return None
-    else:
-        filename = f"{zaid}.xml"
+    found_path = _find_gnds_xml(zaid, data_dir)
+
+    if found_path is None and data_dir is not None:
         try:
             data_dir_str = str(data_dir).lower()
         except (TypeError, AttributeError):
             data_dir_str = str(data_dir)
-
-        candidate_paths = []
-        if data_dir is not None and (
-                "tendl-" in data_dir_str or "tendl" in data_dir_str):
-            candidate_paths.extend([
-                os.path.join(data_dir, f"a-{symbol}{a:03d}.tendl.gnds.xml"),
-                os.path.join(data_dir, f"a_{z:03d}-{symbol}-{a:03d}.xml"),
-                os.path.join(data_dir, f"{symbol.upper()}{a:03d}.xml"),
-                os.path.join(data_dir, f"{symbol.capitalize()}{a:03d}.xml"),
-                os.path.join(data_dir, f"{symbol}{a:03d}.xml"),
-                os.path.join(data_dir, filename),
-            ])
-
-            for cand in candidate_paths:
-                if os.path.exists(cand):
-                    return _get_an_xs_xml(cand)
-
+        if "tendl-" in data_dir_str or "tendl" in data_dir_str:
             try:
                 for fname in os.listdir(data_dir):
                     if not fname.lower().endswith('.xml'):
                         continue
                     if symbol.lower() in fname.lower() and f"{a:03d}" in fname:
-                        cand = os.path.join(data_dir, fname)
-                        return _get_an_xs_xml(cand)
+                        found_path = os.path.join(data_dir, fname)
+                        break
             except OSError:
                 pass
 
-            return None
-        elif data_dir is not None and "endf" in data_dir_str:
-            endf_filename = _get_endf_filename(zaid)
-            endf_path = os.path.join(data_dir, endf_filename)
-            if os.path.exists(endf_path):
-                return _get_an_xs_xml(endf_path)
-            else:
-                return None
-        else:
-            filename = f"{zaid}.xml"
-            return _get_an_xs_xml(os.path.join(data_dir, filename))
+    if found_path is None:
+        if data_dir is not None:
+            try:
+                data_dir_str = str(data_dir).lower()
+            except (TypeError, AttributeError):
+                data_dir_str = str(data_dir)
+            if "tendl-" not in data_dir_str and "tendl" not in data_dir_str and "endf" not in data_dir_str:
+                return _get_an_xs_xml(os.path.join(data_dir, f"{zaid}.xml"))
+        return None
+
+    return _get_an_xs_xml(found_path)
 
 
 def get_stopping_power(
@@ -221,7 +249,7 @@ def get_stopping_power(
     if data_dir is None and (_should_use_sources_for_an_xs(zaid) or _should_use_sources_for_stopping(zaid)):
         sources_dir = _get_sources_stopping_dir()
         if sources_dir:
-            logger.info(f"Using SOURCES stopping power for ZAID {zaid} based on sources_overrides.yaml")
+            logger.info(f"Using SOURCES stopping power for ZAID {zaid} based on data_overrides.yaml")
             return get_sources_stopping_power(zaid, sources_dir, atomic_mass=atomic_mass)
 
     if data_dir == "sources" or (
@@ -287,7 +315,7 @@ def get_branching_info(zaid: int,
     if data_dir is None and _should_use_sources_for_an_xs(zaid):
         sources_dir = _get_sources_an_xs_dir()
         if sources_dir:
-            logger.info(f"Using SOURCES branching data for ZAID {zaid} based on sources_overrides.yaml")
+            logger.info(f"Using SOURCES branching data for ZAID {zaid} based on data_overrides.yaml")
             s4c_key = f"{z:04d}{a*10:04d}"
             return get_sources_branching_info(s4c_key, sources_dir)
 
@@ -295,45 +323,12 @@ def get_branching_info(zaid: int,
             data_dir is not None and "sources" in str(data_dir)):
         s4c_key = f"{z:04d}{a*10:04d}"
         return get_sources_branching_info(s4c_key, data_dir)
-    if data_dir is None:
-        data_root = _default_data_root()
-        possible_filepaths = [
-            os.path.join(data_root, 'an_xs',
-                         "ENDF", _get_endf_filename(zaid)),
-            os.path.join(data_root,
-                         'an_xs', "JENDL", f'{zaid}.xml'),
-            os.path.join(data_root,
-                         'an_xs', "TENDL", f'{zaid}.xml'),
-        ]
-    else:
-        try:
-            data_dir_str = str(data_dir).lower()
-        except (TypeError, AttributeError):
-            data_dir_str = str(data_dir)
-        if data_dir is not None and (
-                "tendl-" in data_dir_str or "tendl" in data_dir_str):
-            possible_filepaths = [
-                os.path.join(data_dir, f"a-{symbol}{a:03d}.tendl.gnds.xml"),
-                os.path.join(data_dir, f"a_{z:03d}-{symbol}-{a:03d}.xml"),
-                os.path.join(data_dir, f"{symbol.upper()}{a:03d}.xml"),
-                os.path.join(data_dir, f"{symbol.capitalize()}{a:03d}.xml"),
-                os.path.join(data_dir, f"{symbol}{a:03d}.xml"),
-                os.path.join(data_dir, f"{zaid}.xml"),
-            ]
-        else:
-            possible_filepaths = [
-                os.path.join(data_dir, f'{zaid}.xml')
-            ]
 
-    found_path = None
-    for cand_path in possible_filepaths:
-        if os.path.exists(cand_path):
-            found_path = cand_path
-            break
+    found_path = _find_gnds_xml(zaid, data_dir)
 
     if not found_path:
         logger.warning(
-            f"(a,n) cross sections file not found for {zaid} in {possible_filepaths}, cannot compute branching fractions.")
+            f"(a,n) cross sections file not found for {zaid}, cannot compute branching fractions.")
         return {}, {}, 0.0
 
     tree = ET.parse(found_path)
@@ -960,6 +955,40 @@ def _load_sf_data_from_yaml(zaid: int,
     except Exception as e:
         logger.debug(f"Could not load SF data from YAML for ZAID {zaid}: {e}")
         return {}
+
+
+def load_delayed_neutron_data(zaid: int) -> dict:
+    """
+    Load delayed neutron yield and spectrum for a nuclide from the bundled library.
+
+    Args:
+        zaid: ZAID identifier (ZZZAAA format)
+
+    Returns:
+        {'nu_delayed', 'average_energy_MeV', 'energy_grid_MeV', 'spectrum_per_MeV'}:
+            Delayed neutron yield and 200-bin spectrum (0-10 MeV),
+        {}: If the nuclide is outside Z=89-106 or has no data file.
+    """
+    z = zaid // 1000
+    a = zaid % 1000
+    if z < 89 or z > 106:
+        return {}
+    yaml_path = get_data_dir() / "delayed_neutron" / "spectra" / f"dn_spectrum_{z}_{a}_sf.yaml"
+    if not yaml_path.exists():
+        logger.warning(f"ZAID {zaid}: No delayed neutron data at {yaml_path}")
+        return {}
+    with open(yaml_path) as f:
+        data = yaml.safe_load(f)
+    required = ('nu_delayed', 'energy_MeV', 'spectrum_per_MeV')
+    if not all(k in data for k in required):
+        logger.warning(f"ZAID {zaid}: Delayed neutron YAML missing required keys")
+        return {}
+    return {
+        'nu_delayed':         float(data['nu_delayed']),
+        'average_energy_MeV': float(data.get('average_energy_MeV', 0.0)),
+        'energy_grid_MeV':    list(data['energy_MeV']),
+        'spectrum_per_MeV':   list(data['spectrum_per_MeV']),
+    }
 
 
 def _parse_endf_sf_data(filepath: str, zaid: int,
@@ -1748,6 +1777,121 @@ def _get_stopping_power_srim(
                 stopping_power_list.append(total_stopping_power)
 
     return dict(zip(energy_list, stopping_power_list))
+
+
+def _get_continuum_dist_from_reaction(
+        reaction: ET.Element) -> Optional[Dict[float, List[Tuple[float, float]]]]:
+    """
+    Extract the neutron energy distribution from an MT=91 continuum reaction element.
+
+    Handles KalbachMann (<KalbachMann><f><XYs2d>) and direct <XYs2d> formats.
+    Returns None when the distribution element is <unspecified>.
+
+    Args:
+        reaction: ET.Element - MT=91 reaction element from a GNDS XML file
+
+    Returns:
+        {incident_energy_MeV: [(E_out_MeV, prob_1/MeV), ...]}, or None if no tabulated data
+    """
+    product = reaction.find(".//product[@pid='n']")
+    if product is None:
+        return None
+    distribution = product.find("distribution")
+    if distribution is None:
+        return None
+
+    xys2d = None
+    kalbach = distribution.find("KalbachMann")
+    if kalbach is not None:
+        f_elem = kalbach.find("f")
+        if f_elem is not None:
+            xys2d = f_elem.find("XYs2d")
+    else:
+        xys2d = distribution.find("XYs2d")
+
+    if xys2d is None:
+        return None
+
+    func1ds = xys2d.find("function1ds")
+    if func1ds is None:
+        return None
+
+    result = {}
+    for xys1d in func1ds.findall("XYs1d"):
+        e_ev_str = xys1d.get("outerDomainValue")
+        if e_ev_str is None:
+            continue
+        values_elem = xys1d.find("values")
+        if values_elem is None or not values_elem.text:
+            continue
+        raw = [float(x) for x in values_elem.text.split()]
+        if len(raw) < 2 or len(raw) % 2 != 0:
+            continue
+        e_out_arr = raw[::2]
+        prob_arr = raw[1::2]
+        pairs = [(e_out_arr[k] / 1e6, prob_arr[k] * 1e6) for k in range(len(e_out_arr))]
+        result[float(e_ev_str) / 1e6] = pairs
+
+    return result if result else None
+
+
+def get_continuum_info(
+        zaid: int,
+        data_dir: Optional[os.PathLike] = None
+) -> Tuple[Optional[Dict[float, float]], Optional[Dict[float, List[Tuple[float, float]]]]]:
+    """
+    Get cross section and energy distribution for the MT=91 continuum (alpha,n) reaction.
+
+    Reads the MT=91 continuum reaction from the same GNDS XML files used for cross
+    sections. Returns (None, None) when SOURCES data is in use or no MT=91 reaction
+    is present. Returns (continuum_xs, None) when cross section data exists but the
+    neutron energy distribution element is <unspecified>.
+
+    Args:
+        zaid: int - Target nucleus ZAID (ZZZAAA format)
+        data_dir: os.PathLike, optional - Directory containing nuclear data files.
+            Defaults to the standard ENDF data directory.
+
+    Returns:
+        Tuple of (continuum_xs, continuum_dist) where continuum_xs is
+        {energy_MeV: cross_section_barns} and continuum_dist is
+        {incident_energy_MeV: [(E_out_MeV, prob_1/MeV), ...]}.
+        Returns (None, None) if no MT=91 data is found.
+
+    Raises:
+        ValueError: If zaid is not a valid ZZZAAA formatted ZAID
+    """
+    if zaid >= 1e6:
+        raise ValueError(f"ZAID {zaid} is not a valid ZZZAAA formatted ZAID.")
+
+    if data_dir is None and _should_use_sources_for_an_xs(zaid):
+        return None, None
+
+    if data_dir == "sources" or (
+            data_dir is not None and "sources" in str(data_dir)):
+        return None, None
+
+    found_path = _find_gnds_xml(zaid, data_dir)
+
+    if not found_path:
+        return None, None
+
+    try:
+        tree = ET.parse(found_path)
+        root = tree.getroot()
+    except ET.ParseError:
+        return None, None
+
+    reaction = root.find(".//reaction[@ENDF_MT='91']")
+    if reaction is None:
+        return None, None
+
+    continuum_xs = _get_cross_section_from_reaction(reaction)
+    if continuum_xs is None:
+        return None, None
+
+    continuum_dist = _get_continuum_dist_from_reaction(reaction)
+    return continuum_xs, continuum_dist
 
 
 def _calculate_branching_fractions(
