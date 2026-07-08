@@ -129,6 +129,60 @@ class TestPackagedChannelData:
     def test_unknown_target_returns_none(self):
         assert gp.get_gamma_target_data(83209, GAMMA_ROOT) is None
 
+    def test_f02_inclusive_residual_is_a_minus_2(self):
+        # The inclusive (n,X) F02 channel de-excites the ParticleHP-convention
+        # residual (Z, A-2), not the (alpha,n) product. For Mg-25 that is
+        # Mg-23, whose level scheme starts at 0.451 MeV (validated against
+        # SaG4n's dominant 0.45 MeV line). Using the (alpha,n) product (Si-28,
+        # first line 1.78 MeV) instead over-produces heavy-target gammas.
+        t = gp.get_gamma_target_data(12025, GAMMA_ROOT)
+        walk = next(ch for ch in t.channels
+                    if ch.kind == gp.GammaChannel.KIND_WALK and ch.label == "F02")
+        assert walk.scheme.level_energies[0] == pytest.approx(0.451, abs=2e-3)
+
+
+class TestInclusiveChannelEnergyBalance:
+    """
+    Guard against the photon-data and residual-walk channels of an inclusive
+    (F02) target double-counting: the total emitted gamma energy must not
+    exceed the residual excitation energy available to the channel.
+    """
+
+    def _channel_energy_balance(self, zaid, e_lab=8.0):
+        import numpy as np
+        from alphanso.utils import get_composite_stopping
+        t = gp.get_gamma_target_data(zaid, GAMMA_ROOT)
+        walk = next((c for c in t.channels if c.kind == gp.GammaChannel.KIND_WALK), None)
+        assert walk is not None
+        sp = get_composite_stopping({zaid: 1.0}, None)
+        ee = np.array(sorted(sp)); vv = np.array([sp[e] for e in ee])
+        grid = np.linspace(e_lab, 0.0, 2000)
+        es = 0.5 * (grid[:-1] + grid[1:]); de = grid[:-1] - grid[1:]
+        spg = np.interp(es, ee, vv, left=0.0, right=0.0)
+        ok = spg > 1e-30
+        e_ok = es[ok]; pw = de[ok] / spg[ok]
+        _, lines = gp.compute_gamma_production(es, de, spg, t)
+        emitted = sum(E * I for E, I in lines.items())
+        # available excitation for gammas = reactions * (E_cm + Q - KE_hadrons),
+        # excluding the photon product (it is the radiation, not a hadron)
+        pop = walk.cross_section(e_ok) * 1e-24 * pw
+        hadron = np.zeros_like(e_ok)
+        for p in walk.products:
+            if p.mass_code == 0.0 and p.mass == 0.0:
+                continue
+            hadron += p.multiplicity(e_ok) * p.mean_energy(e_ok)
+        avail = np.maximum(e_ok * t.cm_factor + walk.q_value - hadron, 0.0)
+        available = float((pop * avail).sum())
+        return emitted, available
+
+    def test_mg25_no_double_count(self):
+        emitted, available = self._channel_energy_balance(12025)
+        assert emitted <= available * 1.02  # <=1 up to numerical slack
+
+    def test_ne22_no_double_count(self):
+        emitted, available = self._channel_energy_balance(10022)
+        assert emitted <= available * 1.02
+
 
 class TestTransportGammaOutput:
 

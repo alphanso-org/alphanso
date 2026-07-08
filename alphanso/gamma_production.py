@@ -37,12 +37,17 @@ For a target nuclide the library provides a set of exit channels under
     the evaluated Q-value, which correctly suppresses these channels near
     threshold.
 
-``F02`` inclusive (n,X) channels: JENDL targets evaluated without discrete
-    channels (F-19, Na-23, Al-27, Si-28/29/30) carry the channel cross section
-    and the neutron MF6 distribution; the residual (taken as the physical
-    target+alpha-n nucleus) de-excites through the level walk.  TENDL-derived
+``F02`` inclusive (n,X) channels: the lumped inclusive representation used by
+    targets without discrete (alpha,n) evaluations (F-19, Na-23, Al-27, Si, and
+    the TENDL-only medium-mass targets).  ParticleHP de-excites a fixed
+    convention residual ``(Z, A-2)`` for this channel (not the (alpha,n)
+    product); its level walk supplies the discrete lines, and TENDL-derived
     ``.z`` files additionally carry an explicit photon product (multiplicity
-    plus discrete/continuum spectra), which is integrated directly.
+    plus discrete/continuum spectra) that is integrated directly.  This
+    inclusive channel is inherently approximate -- neither code resolves the
+    individual physical sub-channels -- so gamma output for F02-only targets
+    (medium/heavy nuclides) is an order-of-magnitude estimate, whereas the
+    discrete (alpha,n) light targets are accurate to a few percent.
 
 Cascade expectation values
 --------------------------
@@ -90,8 +95,8 @@ ALPHA_ZA = (2, 4)
 # Ejectile content of each ParticleHP inelastic final-state directory
 # (from the G4ParticleHPInelastic channel registration).  Keys are directory
 # names; values are lists of (Z, A) of the light ejectiles.  F02 is the
-# inclusive (n,X) channel; its residual is taken as the physical one for a
-# single removed neutron.
+# inclusive (n,X) channel and takes its residual from _FS_RESIDUAL_OVERRIDE
+# rather than this ejectile balance.
 _N, _P, _D, _T, _H, _A = (0, 1), (1, 1), (1, 2), (1, 3), (2, 3), (2, 4)
 FS_EJECTILES: Dict[str, List[Tuple[int, int]]] = {
     'F01': [_N],
@@ -134,6 +139,18 @@ FS_EJECTILES: Dict[str, List[Tuple[int, int]]] = {
 
 # Mass code of the photon product in MF6 blocks
 _PHOTON_MASS_CODE = 0.0
+
+# The inclusive (n,X) channel (directory F02) does not de-excite the exclusive
+# ejectile-balance residual; ParticleHP assigns it a fixed residual by
+# convention.  For an alpha projectile G4ParticleHPNXInelasticFS::Init sets
+# Residual = (Z, A-2) -- e.g. Mg-25 -> Mg-23 -- and de-excites that nucleus'
+# level scheme.  Using the (alpha,n) product here instead (the ejectile-balance
+# result) mis-assigns every F02-only target's discrete lines and, for targets
+# whose (alpha,n) product has a dense low-lying scheme (K-40 from Cl-37,
+# Ca-45 from Ca-42), over-produces gammas by more than an order of magnitude.
+_FS_RESIDUAL_OVERRIDE = {
+    'F02': lambda z, a: (z, a - 2),
+}
 
 
 def _read_tokens(path: str) -> List[str]:
@@ -640,8 +657,11 @@ def _build_multiparticle_channels(path: str, fs_dir: str, z: int, a: int,
     if ejectiles is None:
         logger.debug("Unknown final-state directory %s; skipping %s", fs_dir, path)
         return []
-    res_z = z + ALPHA_ZA[0] - sum(zz for zz, _ in ejectiles)
-    res_a = a + ALPHA_ZA[1] - sum(aa for _, aa in ejectiles)
+    if fs_dir in _FS_RESIDUAL_OVERRIDE:
+        res_z, res_a = _FS_RESIDUAL_OVERRIDE[fs_dir](z, a)
+    else:
+        res_z = z + ALPHA_ZA[0] - sum(zz for zz, _ in ejectiles)
+        res_a = a + ALPHA_ZA[1] - sum(aa for _, aa in ejectiles)
     if res_z <= 0 or res_a <= 0 or res_a < res_z:
         return []
 
