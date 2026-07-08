@@ -329,6 +329,37 @@ Paths can be absolute or relative to the project root. If not specified, ALPHANS
 
 To integrate new data formats, extend the parsers in `alphanso/parsers.py`.
 
+## Nuclear Data Sources
+
+ALPHANSO's bundled nuclear data is derived from the following evaluated
+libraries and databases, whose authors and maintainers we gratefully
+acknowledge:
+
+- **($\alpha$,n) cross sections and secondary-neutron distributions** — the
+  JENDL-5 $\alpha$ sub-library and JENDL/AN-2005 (Japan Atomic Energy Agency),
+  the TENDL TALYS-based evaluated library, and ENDF/B-VIII.0, stored in GNDS
+  format.
+- **Alpha-induced gamma production** — the `JENDLTENDL01` charged-particle
+  library (JENDL/AN-2005 for the light target nuclides combined with
+  TENDL-2017), distributed with the SaG4n code by E. Mendoza *et al.*, together
+  with residual-nucleus level schemes from the Geant4 neutron data library
+  (G4NDL).
+- **Stopping powers** — NIST ASTAR and SRIM.
+- **Decay and nuclear-structure data** — ENDF/B-VIII.0 and RIPL-3 (IAEA).
+
+The alpha-induced gamma source-term calculation uses the ($\alpha$,xn) data
+library and methodology of:
+
+> E. Mendoza, D. Cano-Ott, V. Pesudo, and R. Santorelli,
+> "Neutron production induced by $\alpha$-decay with Geant4,"
+> *Nuclear Instruments and Methods in Physics Research Section A* **960**,
+> 163659 (2020). [doi:10.1016/j.nima.2020.163659](https://doi.org/10.1016/j.nima.2020.163659)
+
+Underlying evaluated libraries: TENDL (A. J. Koning *et al.*, *Nucl. Data
+Sheets* **155**, 1, 2019); JENDL-5 (O. Iwamoto *et al.*, *J. Nucl. Sci.
+Technol.* **60**, 1, 2023); Geant4 / G4NDL (S. Agostinelli *et al.*, *Nucl.
+Instrum. Methods A* **506**, 250, 2003).
+
 ## Citation
 
 If you use ALPHANSO in your research, please cite:
