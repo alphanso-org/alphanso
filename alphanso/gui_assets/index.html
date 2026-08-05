@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#17324d">
+  <title>ALPHANSO</title>
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Application navigation">
+      <a class="brand" href="#" aria-label="ALPHANSO home">
+        <span class="brand-copy">
+          <strong>ALPHANSO</strong>
+        </span>
+      </a>
+
+      <nav class="primary-nav">
+        <button class="nav-item active" type="button" data-nav="builder">
+          <span>Calculation</span>
+        </button>
+        <button class="nav-item" type="button" data-nav="examples">
+          <span>Examples</span>
+          <span class="nav-count" id="example-count">0</span>
+        </button>
+        <button class="nav-item" type="button" data-nav="saved">
+          <span>Saved</span>
+          <span class="nav-count" id="saved-count">0</span>
+        </button>
+        <button class="nav-item" type="button" data-nav="recent">
+          <span>Recent runs</span>
+          <span class="nav-count" id="recent-count">0</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="version" id="app-version">v0.0.0</span>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div class="breadcrumb">
+          <button class="breadcrumb-home" id="workspace-button" type="button">Workspace</button>
+          <span aria-hidden="true">/</span>
+          <strong id="breadcrumb-title">Untitled calculation</strong>
+        </div>
+        <div class="topbar-actions">
+          <input id="yaml-file" type="file" accept=".yaml,.yml,text/yaml" hidden>
+          <button class="button button-quiet" id="import-button" type="button">
+            Import YAML
+          </button>
+          <button class="button button-quiet" id="save-button" type="button">
+            Save configuration
+          </button>
+          <button class="button button-quiet" id="export-button" type="button">
+            Export YAML
+          </button>
+          <button class="button button-dark" id="new-button" type="button">New calculation</button>
+        </div>
+      </header>
+
+      <section class="page" id="builder-view">
+        <header class="page-heading">
+          <div>
+            <p class="eyebrow"><span data-latex="\mathsf{(\alpha,n)}"></span> SOURCE-TERM MODEL</p>
+            <h1>Calculation setup</h1>
+          </div>
+        </header>
+
+        <div class="workspace-grid">
+          <div class="editor-stack">
+            <section class="panel setup-panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="section-number">01</span>
+                  <div>
+                    <h2>Geometry</h2>
+                    <p>Calculation identifier and physical configuration.</p>
+                  </div>
+                </div>
+              </div>
+
+              <label class="field title-field">
+                <span><code>name</code> <small>calculation label</small></span>
+                <input id="calculation-name" type="text" maxlength="100" autocomplete="off">
+              </label>
+
+              <fieldset class="geometry-fieldset">
+                <legend><code>calc_type</code></legend>
+                <div class="geometry-grid" id="geometry-grid"></div>
+              </fieldset>
+            </section>
+
+            <section class="panel materials-panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="section-number">02</span>
+                  <div>
+                    <h2>Material model</h2>
+                    <p id="materials-description">Define the source mixture by isotope and mass fraction.</p>
+                  </div>
+                </div>
+                <span class="unit-badge">Mass fractions</span>
+              </div>
+              <div id="geometry-fields"></div>
+            </section>
+
+            <section class="panel physics-panel">
+              <button class="accordion-trigger" id="physics-trigger" type="button" aria-expanded="true">
+                <span>
+                  <span class="section-number">03</span>
+                  <span><strong>Physics and output</strong><small>Gamma production and result-file options</small></span>
+                </span>
+                <span class="accordion-action" data-accordion-action>Close</span>
+              </button>
+              <div class="accordion-content" id="physics-content">
+                <div id="basic-parameter-fields"></div>
+              </div>
+            </section>
+
+            <section class="panel physics-panel advanced-panel">
+              <button class="accordion-trigger" id="advanced-trigger" type="button" aria-expanded="false">
+                <span>
+                  <span class="section-number">04</span>
+                  <span><strong>Advanced settings</strong><small>Energy grids, convergence controls, and data sources</small></span>
+                </span>
+                <span class="accordion-action" data-accordion-action>Open</span>
+              </button>
+              <div class="accordion-content" id="advanced-content" hidden>
+                <p class="advanced-note">Defaults come from the installed ALPHANSO release. Adjust discretization for convergence studies, or supply custom data directories to override the installed datasets.</p>
+                <div id="advanced-parameter-fields"></div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="run-sidebar">
+            <section class="run-card">
+              <div class="run-card-heading">
+                <div>
+                  <p class="eyebrow">CURRENT INPUT</p>
+                  <h2>config.yaml</h2>
+                </div>
+              </div>
+
+              <pre class="config-preview" id="config-preview" aria-label="YAML configuration preview"></pre>
+
+              <div class="validation-box" id="validation-box" role="status">
+                <span class="validation-icon" aria-hidden="true">OK</span>
+                <div><strong>Ready to calculate</strong><small>All required inputs are complete.</small></div>
+              </div>
+              <ul class="validation-list" id="validation-list" hidden></ul>
+
+              <button class="button button-primary run-button" id="run-button" type="button" disabled>
+                <span class="run-label">Run calculation</span>
+                <span class="run-loading"><i></i> Calculating source term...</span>
+              </button>
+              <p class="run-hint"><kbd id="shortcut-modifier">Ctrl</kbd><span>+</span><kbd>Enter</kbd> to run</p>
+            </section>
+          </aside>
+        </div>
+
+        <section class="results-section" id="results-section" hidden>
+          <div class="results-heading">
+            <div>
+              <p class="eyebrow">CALCULATION COMPLETE</p>
+              <h2>Source-term results</h2>
+              <p id="result-subtitle">Calculated from the current configuration.</p>
+            </div>
+            <div class="results-actions">
+              <button class="button button-quiet" id="download-results" type="button">Download results JSON</button>
+              <button class="button button-dark" id="edit-inputs" type="button">Edit inputs</button>
+            </div>
+          </div>
+
+          <div class="metric-grid" id="metric-grid"></div>
+
+          <div class="results-grid">
+            <article class="chart-card spectrum-card">
+              <div class="chart-heading">
+                <div><span class="chart-kicker">Neutron output</span><h3>Energy spectrum</h3></div>
+                <div class="chart-legend" id="spectrum-legend"></div>
+              </div>
+              <div class="chart-wrap" id="spectrum-chart"></div>
+            </article>
+
+            <article class="chart-card gamma-card" id="gamma-card">
+              <div class="chart-heading">
+                <div><span class="chart-kicker">Prompt photons</span><h3>Strongest gamma lines</h3></div>
+                <span class="chart-note">Top 8 by intensity</span>
+              </div>
+              <div id="gamma-lines"></div>
+            </article>
+          </div>
+        </section>
+      </section>
+
+      <section class="page utility-view" id="examples-view" hidden>
+        <header class="utility-heading">
+          <p class="eyebrow">BUNDLED WITH THE REPOSITORY</p>
+          <h1>Example calculations</h1>
+          <p>Load any configuration from <code>example_usage/</code>, including the YAML files and Python API examples.</p>
+        </header>
+        <div class="example-summary" id="example-summary">Loading repository examples...</div>
+        <div class="examples-grid" id="examples-grid"></div>
+      </section>
+
+      <section class="page utility-view" id="recent-view" hidden>
+        <header class="utility-heading"><p class="eyebrow">LOCAL WORKSPACE HISTORY</p><h1>Recent runs</h1><p>Reopen completed configurations stored on this device.</p></header>
+        <div class="recent-grid" id="recent-grid"></div>
+      </section>
+
+      <section class="page utility-view" id="saved-view" hidden>
+        <header class="utility-heading"><p class="eyebrow">LOCAL CONFIGURATION LIBRARY</p><h1>Saved configurations</h1><p>Configurations are stored locally on this device and remain available between sessions.</p></header>
+        <div class="example-summary" id="saved-summary">No saved configurations.</div>
+        <div class="recent-grid" id="saved-grid"></div>
+      </section>
+
+    </main>
+  </div>
+
+  <datalist id="isotope-options"></datalist>
+  <div class="toast-region" id="toast-region" aria-live="polite"></div>
+
+  <script src="/vendor/katex/katex.min.js" defer></script>
+  <script src="/app.js" defer></script>
+</body>
+</html>

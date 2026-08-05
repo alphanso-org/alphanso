@@ -7,6 +7,15 @@ from scipy.interpolate import interp1d
 from scipy.special import erf
 from collections import defaultdict
 from .constants import AVOGADRO_NUM, ANEUT_MASS, ALPH_MASS
+from .configuration import (
+    DEFAULT_CALCULATE_GAMMAS,
+    DEFAULT_MAX_ALPHA_ENERGY,
+    DEFAULT_MIN_ALPHA_ENERGY,
+    DEFAULT_N_ANGULAR_BINS,
+    DEFAULT_NEUTRON_ENERGY_BINS,
+    DEFAULT_NUM_ALPHA_GROUPS,
+    DEFAULT_SAVE_DATA_FILES,
+)
 from .atomic_data_loader import atomic_data
 from .parsers import (
     get_an_xs,
@@ -123,7 +132,7 @@ class Transport(object):
 
         # Save results to files if output_dir is specified
         output_dir = config.get('output_dir')
-        save_data_files = config.get('save_data_files', True)
+        save_data_files = config.get('save_data_files', DEFAULT_SAVE_DATA_FILES)
         if output_dir and save_data_files:
             write_results_yaml(results, output_dir)
 
@@ -166,7 +175,8 @@ class Transport(object):
         an_xs_data_dir = config.get('an_xs_data_dir')
         stopping_power_data_dir = config.get('stopping_power_data_dir')
 
-        calculate_gammas = config.get('calculate_gammas', True)
+        calculate_gammas = config.get(
+            'calculate_gammas', DEFAULT_CALCULATE_GAMMAS)
         gamma_data_dir = config.get('gamma_data_dir')
 
         if 'beam_intensities' in config:
@@ -243,7 +253,8 @@ class Transport(object):
         stopping_power_data_dir = config.get('stopping_power_data_dir')
         decay_data_dir = config.get('decay_data_dir')
 
-        calculate_gammas = config.get('calculate_gammas', True)
+        calculate_gammas = config.get(
+            'calculate_gammas', DEFAULT_CALCULATE_GAMMAS)
         gamma_data_dir = config.get('gamma_data_dir')
 
         result = Transport.homogeneous_problem(
@@ -472,7 +483,7 @@ class Transport(object):
             neutron_energy_bins=None,
             an_xs_data_dir=None,
             stopping_power_data_dir=None,
-            calculate_gammas=True,
+            calculate_gammas=DEFAULT_CALCULATE_GAMMAS,
             gamma_data_dir=None):
         """
         Calculate neutron production from alpha beam incident on thick target.
@@ -503,14 +514,14 @@ class Transport(object):
         """
 
         if num_alpha_groups is None:
-            num_alpha_groups = 15000
+            num_alpha_groups = DEFAULT_NUM_ALPHA_GROUPS
         if min_alpha_energy is None:
-            min_alpha_energy = 1e-11
+            min_alpha_energy = DEFAULT_MIN_ALPHA_ENERGY
         if max_alpha_energy is None:
-            max_alpha_energy = 15
+            max_alpha_energy = DEFAULT_MAX_ALPHA_ENERGY
         ebins = np.linspace(min_alpha_energy, max_alpha_energy, num_alpha_groups + 1)
         if neutron_energy_bins is None:
-            neutron_energy_bins = np.linspace(15.0, 0.0, 101)
+            neutron_energy_bins = np.linspace(*DEFAULT_NEUTRON_ENERGY_BINS)
 
         mass_fractions, atom_fractions = matdef_to_zaids(matdef)
 
@@ -706,7 +717,7 @@ class Transport(object):
             an_xs_data_dir=None,
             stopping_power_data_dir=None,
             decay_data_dir=None,
-            calculate_gammas=True,
+            calculate_gammas=DEFAULT_CALCULATE_GAMMAS,
             gamma_data_dir=None):
         """
         Calculate neutron production from uniform mixture of alpha emitters in target material.
@@ -760,7 +771,7 @@ class Transport(object):
         energies = [[e, float(i)] for e, i in spectrum.items()]
 
         if neutron_energy_bins is None:
-            neutron_energy_bins = np.linspace(15.0, 0.0, 101)
+            neutron_energy_bins = np.linspace(*DEFAULT_NEUTRON_ENERGY_BINS)
 
         decay_data_source = decay_data_dir if decay_data_dir is not None else data_dir
 
@@ -1159,11 +1170,11 @@ class Transport(object):
         max_energy = min(max_energy, max(stopping_abs.keys()))
 
         if num_alpha_groups is None:
-            num_alpha_groups = 15000
+            num_alpha_groups = DEFAULT_NUM_ALPHA_GROUPS
         if min_alpha_energy is None:
-            min_alpha_energy = 1e-11
+            min_alpha_energy = DEFAULT_MIN_ALPHA_ENERGY
         if max_alpha_energy is None:
-            max_alpha_energy = 15
+            max_alpha_energy = DEFAULT_MAX_ALPHA_ENERGY
         ebins = np.linspace(min_alpha_energy, max_alpha_energy, num_alpha_groups + 1)
         energies = np.array(sorted(ebins), float)
         energies = energies[energies <= max_energy]
@@ -1367,7 +1378,8 @@ class Transport(object):
         source_matdef = config['source_matdef']
         source_density = config.get('source_density')
 
-        calculate_gammas = config.get('calculate_gammas', True)
+        calculate_gammas = config.get(
+            'calculate_gammas', DEFAULT_CALCULATE_GAMMAS)
         gamma_data_dir = config.get('gamma_data_dir')
 
         interface_spectrum = Transport.interface_alpha_term(
@@ -1419,8 +1431,8 @@ class Transport(object):
         source_density,
         stopping_power_data_dir=None,
         decay_data_dir=None,
-        min_alpha_energy=1e-11,
-        max_alpha_energy=15
+        min_alpha_energy=DEFAULT_MIN_ALPHA_ENERGY,
+        max_alpha_energy=DEFAULT_MAX_ALPHA_ENERGY
     ):
         """
         Calculate alpha spectrum entering first layer from volumetric source emission.
@@ -1580,9 +1592,9 @@ class Transport(object):
         intermediate_layers,
         stopping_power_data_dir=None,
         decay_data_dir=None,
-        n_angular_bins=40,
-        min_alpha_energy=1e-11,
-        max_alpha_energy=15
+        n_angular_bins=DEFAULT_N_ANGULAR_BINS,
+        min_alpha_energy=DEFAULT_MIN_ALPHA_ENERGY,
+        max_alpha_energy=DEFAULT_MAX_ALPHA_ENERGY
     ):
         """
         Calculate alpha spectrum entering target after degradation through all intermediate layers.
@@ -1749,15 +1761,19 @@ class Transport(object):
         an_xs_data_dir = config.get('an_xs_data_dir')
         stopping_power_data_dir = config.get('stopping_power_data_dir')
         decay_data_dir = config.get('decay_data_dir')
-        n_angular_bins = config.get('n_angular_bins', 40)
+        n_angular_bins = config.get('n_angular_bins', DEFAULT_N_ANGULAR_BINS)
         neutron_energy_bins = config.get('neutron_energy_bins')
 
-        calculate_gammas = config.get('calculate_gammas', True)
+        calculate_gammas = config.get(
+            'calculate_gammas', DEFAULT_CALCULATE_GAMMAS)
         gamma_data_dir = config.get('gamma_data_dir')
 
-        num_alpha_groups = config.get('num_alpha_groups', 15000)
-        min_alpha_energy = config.get('min_alpha_energy', 1e-11)
-        max_alpha_energy = config.get('max_alpha_energy', 15)
+        num_alpha_groups = config.get(
+            'num_alpha_groups', DEFAULT_NUM_ALPHA_GROUPS)
+        min_alpha_energy = config.get(
+            'min_alpha_energy', DEFAULT_MIN_ALPHA_ENERGY)
+        max_alpha_energy = config.get(
+            'max_alpha_energy', DEFAULT_MAX_ALPHA_ENERGY)
 
         source_matdef = config['source_matdef']
         source_density = config['source_density']

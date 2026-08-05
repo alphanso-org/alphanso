@@ -41,6 +41,12 @@ cd alphanso
 pip install -e .
 ```
 
+To install the native desktop interface on macOS, Windows, or Linux:
+
+```bash
+pip install -e ".[desktop]"
+```
+
 When installed from source, ALPHANSO uses the bundled `alphanso/data/` directory directly (no download needed).
 
 ### Custom Data Location
@@ -54,6 +60,27 @@ export ALPHANSO_DATA_DIR=/path/to/nuclear/data
 Use `alphanso data-info` to check the current data paths and status.
 
 ## Quick Start
+
+### Desktop Interface
+
+Launch ALPHANSO as a native desktop application without browser chrome:
+
+```bash
+alphanso desktop
+```
+
+The desktop command uses Cocoa on macOS, WebView2 on Windows, and Qt WebEngine
+on Linux. It keeps the calculation API local to the application process. Linux
+users who prefer a system GTK webview can select it with
+`alphanso desktop --renderer gtk` after installing the GTK dependencies for
+pywebview. The browser-based development interface remains available with
+`alphanso gui`.
+
+The interface reads the installed ALPHANSO package metadata and canonical
+configuration schema at startup. Its displayed version, calculation types,
+numerical defaults, shared YAML controls, and bundled examples therefore track
+the installed release automatically. YAML files and Python configurations
+added under `example_usage/` are discovered and shown without editing the GUI.
 
 ### Command-Line Interface
 
