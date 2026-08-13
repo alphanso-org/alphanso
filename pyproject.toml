@@ -30,15 +30,28 @@ dependencies = [
     "platformdirs>=3.0",
 ]
 
+[project.optional-dependencies]
+desktop = [
+    "pywebview>=6.2,<7; sys_platform != 'linux'",
+    "pywebview[qt]>=6.2,<7; sys_platform == 'linux'",
+]
+
 [project.scripts]
 alphanso = "alphanso.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-exclude = ["tests*", "example_usage*"]
+exclude = ["tests*", "build*", "dist*"]
 
 [tool.setuptools.package-data]
-alphanso = ["data/atomic_data/*", "data/data_overrides.yaml"]
+alphanso = [
+    "data/atomic_data/*",
+    "data/data_overrides.yaml",
+    "gui_assets/*",
+    "gui_assets/vendor/katex/*",
+    "gui_assets/vendor/katex/fonts/*",
+]
+example_usage = ["*.yaml", "*.yml"]
 
 [project.urls]
 Repository = "https://github.com/alphanso-org/alphanso"

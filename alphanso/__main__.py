@@ -7,6 +7,7 @@ Usage:
     alphanso run <config_path> [output_dir]     # explicit run
     alphanso download-data [--dir PATH]         # pre-download data
     alphanso data-info                          # show data paths and status
+    alphanso desktop                            # launch native desktop app
 """
 
 import argparse
@@ -26,7 +27,7 @@ from .data_manager import ensure_data, get_data_info
 
 logger = logging.getLogger(__name__)
 
-_SUBCOMMANDS = {"run", "download-data", "data-info"}
+_SUBCOMMANDS = {"run", "download-data", "data-info", "gui", "desktop"}
 
 
 def read_in(config_path: Union[str, Path]) -> List[Dict[str, Any]]:
@@ -306,6 +307,7 @@ Examples:
     alphanso download-data                      # Pre-download nuclear data
     alphanso download-data --dir /custom/path   # Download to custom location
     alphanso data-info                          # Show data paths and status
+    alphanso desktop                            # Launch native desktop app
         """
     )
 
@@ -338,6 +340,41 @@ Examples:
     subparsers.add_parser(
         "data-info", help="Show nuclear data paths and status")
 
+    # gui subcommand
+    gui_parser = subparsers.add_parser(
+        "gui", help="Launch the ALPHANSO interface in a web browser")
+    gui_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host interface to bind (default: 127.0.0.1)"
+    )
+    gui_parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port to bind (default: 8765; use 0 for an available port)"
+    )
+    gui_parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not open a browser automatically"
+    )
+
+    desktop_parser = subparsers.add_parser(
+        "desktop", help="Launch ALPHANSO in a native desktop window")
+    desktop_parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="Internal API port (default: choose an available port)"
+    )
+    desktop_parser.add_argument(
+        "--renderer",
+        choices=("auto", "qt", "gtk"),
+        default="auto",
+        help="Desktop renderer (default: platform-native automatic selection)"
+    )
+
     args = parser.parse_args(raw_args)
 
     if args.command is None:
@@ -351,6 +388,13 @@ Examples:
             _cmd_download_data(args.target_dir)
         elif args.command == "data-info":
             _cmd_data_info()
+        elif args.command == "gui":
+            from .gui_server import launch_gui
+            launch_gui(args.host, args.port, open_browser=not args.no_browser)
+        elif args.command == "desktop":
+            from .gui_server import launch_desktop
+            renderer = None if args.renderer == "auto" else args.renderer
+            launch_desktop(port=args.port, renderer=renderer)
     except Exception as e:
         print(f"Fatal error: {e}")
         sys.exit(1)
