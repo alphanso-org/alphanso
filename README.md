@@ -367,6 +367,7 @@ If you use ALPHANSO in your research, please cite:
 ```bibtex
 @article{rawal2026alphanso,
   title = {ALPHANSO: Open-source modeling of ($\alpha$, n) neutron source terms},
+  author = {Divit Rawal and Anthony J. Nelson and William Zywiec and Daniel Siefman},
   journal = {Nuclear Instruments and Methods in Physics Research Section A: Accelerators, Spectrometers, Detectors and Associated Equipment},
   year = {2026},
   pages = {171713},
