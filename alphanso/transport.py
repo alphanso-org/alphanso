@@ -97,10 +97,14 @@ class Transport(object):
 
         ensure_data()
 
-        if config.get('neutron_energy_bins') is not None:
-            bins = np.asarray(config['neutron_energy_bins'], dtype=float)
-            if len(bins) == 3:
-                bins = np.linspace(bins[0], bins[1], int(bins[2]))
+        config = config.copy()
+        raw_bins = config.get('neutron_energy_bins')
+        if raw_bins is not None:
+            # Only three-element lists use [start, stop, num_points] shorthand.
+            if isinstance(raw_bins, list) and len(raw_bins) == 3:
+                bins = np.linspace(raw_bins[0], raw_bins[1], int(raw_bins[2]))
+            else:
+                bins = np.asarray(raw_bins, dtype=float)
             if bins[0] < bins[-1]:
                 bins = bins[::-1]
             config['neutron_energy_bins'] = bins

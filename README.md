@@ -171,7 +171,7 @@ Monoenergetic or polyenergetic alpha beam incident on a thick target.
 - `num_alpha_groups` (int, default: `15000`): Number of alpha energy groups
 - `min_alpha_energy` (float, default: `1e-11`): Minimum alpha energy in MeV
 - `max_alpha_energy` (float, default: `15`): Maximum alpha energy in MeV
-- `neutron_energy_bins` (list): Custom neutron energy bins in MeV (default: 0→15 MeV, 101 points). Accepts a 3-element shorthand `[start, stop, num_points]` which is expanded via `np.linspace`.
+- `neutron_energy_bins` (list or NumPy array, optional): Neutron energy bin edges in MeV. Three-element lists are shorthand `[start, stop, num_points]` for linearly spaced edges; lists of other lengths and all NumPy arrays specify explicit edges. Default: 101 edges spanning 0–15 MeV (100 bins).
 - `an_xs_data_dir` (str): Path to ($\alpha$,n) cross-section data directory
 - `stopping_power_data_dir` (str): Path to stopping power data directory
 
@@ -197,7 +197,7 @@ Uniform mixture of alpha-emitting isotopes and target materials.
 - `num_alpha_groups` (int, default: `15000`): Number of alpha energy groups
 - `min_alpha_energy` (float, default: `1e-11`): Minimum alpha energy in MeV
 - `max_alpha_energy` (float, default: `15`): Maximum alpha energy in MeV
-- `neutron_energy_bins` (list): Custom neutron energy bins in MeV (default: 0→15 MeV, 101 points). Accepts a 3-element shorthand `[start, stop, num_points]`.
+- `neutron_energy_bins` (list or NumPy array, optional): Neutron energy bin edges in MeV. Three-element lists are shorthand `[start, stop, num_points]` for linearly spaced edges; lists of other lengths and all NumPy arrays specify explicit edges. Default: 101 edges spanning 0–15 MeV (100 bins).
 - `an_xs_data_dir` (str): Path to cross-section data
 - `stopping_power_data_dir` (str): Path to stopping power data
 - `decay_data_dir` (str): Path to decay/branching data
@@ -229,7 +229,7 @@ Planar interface between an alpha-emitting source region and a target region.
 - `num_alpha_groups` (int, default: `15000`): Number of alpha energy groups
 - `min_alpha_energy` (float, default: `1e-11`): Minimum alpha energy in MeV
 - `max_alpha_energy` (float, default: `15`): Maximum alpha energy in MeV
-- `neutron_energy_bins` (list): Custom neutron energy bins in MeV (default: 0→15 MeV, 101 points). Accepts a 3-element shorthand `[start, stop, num_points]`.
+- `neutron_energy_bins` (list or NumPy array, optional): Neutron energy bin edges in MeV. Three-element lists are shorthand `[start, stop, num_points]` for linearly spaced edges; lists of other lengths and all NumPy arrays specify explicit edges. Default: 101 edges spanning 0–15 MeV (100 bins).
 - `an_xs_data_dir` (str): Cross-section data path
 - `stopping_power_data_dir` (str): Stopping power data path
 - `decay_data_dir` (str): Decay data path
@@ -263,7 +263,7 @@ Multi-layer sandwich geometry with volumetric formulation. Alpha source (Region 
 - `num_alpha_groups` (int, default: `15000`): Number of alpha energy groups
 - `min_alpha_energy` (float, default: `1e-11`): Minimum alpha energy in MeV
 - `max_alpha_energy` (float, default: `15`): Maximum alpha energy in MeV
-- `neutron_energy_bins` (list): Custom neutron energy bins in MeV (default: 0→15 MeV, 101 points). Accepts a 3-element shorthand `[start, stop, num_points]`.
+- `neutron_energy_bins` (list or NumPy array, optional): Neutron energy bin edges in MeV. Three-element lists are shorthand `[start, stop, num_points]` for linearly spaced edges; lists of other lengths and all NumPy arrays specify explicit edges. Default: 101 edges spanning 0–15 MeV (100 bins).
 - `an_xs_data_dir` (str): Cross-section data path
 - `stopping_power_data_dir` (str): Stopping power data path
 - `decay_data_dir` (str): Decay data path
