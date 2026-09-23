@@ -97,14 +97,17 @@ class Transport(object):
 
         ensure_data()
 
-        # Convert neutron_energy_bins shorthand [start, stop, num_points] to full array
-        if 'neutron_energy_bins' in config and isinstance(
-                config['neutron_energy_bins'], list) and len(
-                config['neutron_energy_bins']) == 3:
-            config['neutron_energy_bins'] = np.linspace(
-                config['neutron_energy_bins'][0],
-                config['neutron_energy_bins'][1],
-                int(config['neutron_energy_bins'][2]))
+        config = config.copy()
+        raw_bins = config.get('neutron_energy_bins')
+        if raw_bins is not None:
+            # Only three-element lists use [start, stop, num_points] shorthand.
+            if isinstance(raw_bins, list) and len(raw_bins) == 3:
+                bins = np.linspace(raw_bins[0], raw_bins[1], int(raw_bins[2]))
+            else:
+                bins = np.asarray(raw_bins, dtype=float)
+            if bins[0] < bins[-1]:
+                bins = bins[::-1]
+            config['neutron_energy_bins'] = bins
 
         calc_type = config.get('calc_type')
 
