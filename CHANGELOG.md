@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.1] - 2026-09-24
+
+### Fixed
+
+- Custom neutron energy grids now return ascending bin edges with spectra in the matching order, consistent with the default grid.
+- Three-element Python lists retain the linear `[start, stop, num_points]` shorthand; all NumPy arrays and lists of other lengths specify explicit bin edges.
+- Calculations no longer replace the caller's neutron energy grid, so the same configuration can be reused safely.
+
+### Documentation
+
+- Clarified neutron energy bin inputs for all four calculation types.
+- Added attribution for bundled nuclear data sources and completed the citation author list.
+
 ## [1.1.0] - 2026-07-08
 
 ### Added
