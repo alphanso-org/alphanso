@@ -128,7 +128,7 @@ class Transport(object):
         output_dir = config.get('output_dir')
         save_data_files = config.get('save_data_files', True)
         if output_dir and save_data_files:
-            write_results_yaml(results, output_dir)
+            write_results_yaml(results, output_dir, calc_type=calc_type)
 
         return results
 
