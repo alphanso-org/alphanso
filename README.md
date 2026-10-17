@@ -17,6 +17,7 @@ Applications include reactor design, nuclear safeguards, radioactive waste manag
 - **Multiple Geometry Types**: Beam, homogeneous, interface, and sandwich configurations
 - **Accurate Physics**: Up-to-date nuclear data with customizable data sources
 - **Complete Output**: Neutron yields and energy spectra, plus the alpha-induced prompt gamma source term (yields and discrete lines, validated against SaG4n/Geant4)
+- **Angular Distributions**: Optional Legendre-weighted anisotropic emission for discrete levels (isotropic by default)
 - **Command-Line & Python API**: Use via CLI or integrate into Python workflows
 
 ## Installation
@@ -145,6 +146,7 @@ print(f"Neutron yield: {results['an_yield']:.3e} n/alpha")
 - `name` (str): Label for identification in CLI output
 - `output_dir` (str): Directory to save `results.yaml`.
 - `save_data_files` (bool, default: `True`): Whether to save output files when `output_dir` is specified. Set to `False` to skip file saving.
+- `use_legendre_angular` (bool, default: `False`): Weight discrete-level neutron emission by the per-level Legendre angular distributions tabulated in the ($\alpha$,n) data files. When `False` (the default), or for any level without tabulated coefficients, emission is isotropic. Enabling it reshapes the spectrum within each level's kinematic band; the total neutron yield is unchanged. Applies to all calculation types.
 
 ## Running Tests
 

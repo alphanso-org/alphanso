@@ -6,6 +6,8 @@
 # - beam_energy: Beam energy in MeV
 # - an_xs_data_dir: [optional] Path to (a,n) cross section data
 # - stopping_power_data_dir: [optional] Path to stopping power data
+# - use_legendre_angular: [optional] Weight discrete-level emission by the
+#     tabulated Legendre angular distributions (default: false = isotropic)
 
 name: "Example Be-9 Beam Calculation"
 calc_type: "beam"
@@ -13,3 +15,6 @@ matdef:
   Be-9: 1.0
 beam_energy: 5.0
 neutron_energy_bins: [12.0, 0.0, 101]
+
+# Opt in to anisotropic (Legendre) emission; omit or set false for isotropic.
+use_legendre_angular: true
