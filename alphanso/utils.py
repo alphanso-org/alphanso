@@ -344,3 +344,126 @@ def _accumulate_spectrum_continuum_box(
     ov_lower = b_lo[:, np.newaxis]
     overlap = np.maximum(0.0, ov_upper - ov_lower)
     return overlap @ density_v
+
+
+def _interpolate_legendre_coeffs(
+        ang_dist: Optional[Dict[float, List[float]]],
+        e_alpha_mev: float) -> Optional[np.ndarray]:
+    """
+    Linearly interpolate Legendre angular distribution coefficients at a given alpha energy.
+
+    Args:
+        ang_dist: dict, optional - {alpha_energy_MeV: [a_0, a_1, ..., a_L]}
+        e_alpha_mev: float - Alpha particle energy in MeV
+
+    Returns:
+        ndarray, optional - Interpolated Legendre coefficients, or None if outside
+        the tabulated energy range or if ang_dist is None
+    """
+    if ang_dist is None:
+        return None
+
+    energies = sorted(ang_dist.keys())
+    if not energies or e_alpha_mev < energies[0] or e_alpha_mev > energies[-1]:
+        return None
+
+    idx = int(np.searchsorted(energies, e_alpha_mev, side='right')) - 1
+    idx = min(idx, len(energies) - 2)
+
+    e_lo = energies[idx]
+    e_hi = energies[idx + 1]
+    c_lo = ang_dist[e_lo]
+    c_hi = ang_dist[e_hi]
+
+    max_len = max(len(c_lo), len(c_hi))
+    arr_lo = np.zeros(max_len)
+    arr_hi = np.zeros(max_len)
+    arr_lo[:len(c_lo)] = c_lo
+    arr_hi[:len(c_hi)] = c_hi
+
+    t = (e_alpha_mev - e_lo) / (e_hi - e_lo) if e_hi > e_lo else 0.0
+    return arr_lo + t * (arr_hi - arr_lo)
+
+
+def _legendre_antideriv_grid(coeffs, mu):
+    """
+    Evaluate the antiderivative of a Legendre-expanded angular distribution on a grid.
+
+    Computes F(mu) = (1/2) * sum_l a_l * (P_{l+1}(mu) - P_{l-1}(mu)), with P_{-1} = 1,
+    using the three-term recurrence for Legendre polynomials. The integral of the
+    normalized distribution (a_0 = 1) from mu1 to mu2 is F(mu2) - F(mu1); an isotropic
+    distribution ([1, 0, ...]) therefore gives F(mu2) - F(mu1) = (mu2 - mu1) / 2, which
+    reproduces the uniform-in-mu result used by :func:`_accumulate_spectrum`.
+
+    Args:
+        coeffs: ndarray - Legendre coefficients, shape (n_valid, L+1) with a_0 = 1
+        mu: ndarray - Evaluation points, shape (nng, n_valid)
+
+    Returns:
+        ndarray - Antiderivative values, shape (nng, n_valid)
+    """
+    n_coeffs = coeffs.shape[1]
+    a = coeffs.T  # (L+1, n_valid), so a[l] broadcasts against mu's trailing axis
+    p_prev = np.ones_like(mu)   # P_{l-1}, initialized to P_{-1} = 1
+    p_curr = np.ones_like(mu)   # P_l,     initialized to P_0    = 1
+    p_next = mu                 # P_{l+1}, initialized to P_1    = mu
+    result = 0.5 * a[0][np.newaxis, :] * (p_next - p_prev)
+    for l in range(1, n_coeffs):
+        p_new = ((2 * l + 1) * mu * p_next - l * p_curr) / (l + 1)
+        result = result + 0.5 * a[l][np.newaxis, :] * (p_new - p_curr)
+        p_prev = p_curr
+        p_curr = p_next
+        p_next = p_new
+    return result
+
+
+def _accumulate_spectrum_legendre(
+        b_lo, b_hi, valid_i, valid_j, yield_matrix, enmin, enmax, coeffs_padded):
+    """
+    Accumulate neutron spectrum using Legendre angular distribution weighting.
+
+    For each valid (alpha_step, level) pair, distributes the yield into neutron energy
+    bins using the analytic integral of the Legendre-expanded CM-frame angular
+    distribution, mapped to lab-frame energy via E_n = mid + half_w * cos(theta_CM)
+    where mid = (enmax + enmin) / 2 and half_w = (enmax - enmin) / 2. Pairs whose
+    coefficients are [1, 0, ...] reduce exactly to isotropic emission.
+
+    Args:
+        b_lo: ndarray - Lower edges of neutron energy bins, shape (nng,)
+        b_hi: ndarray - Upper edges of neutron energy bins, shape (nng,)
+        valid_i: ndarray - Alpha step indices of valid (step, level) pairs, shape (n_valid,)
+        valid_j: ndarray - Level indices of valid (step, level) pairs, shape (n_valid,)
+        yield_matrix: ndarray - Yield weights, shape (n_steps, n_levels)
+        enmin: ndarray - Minimum lab neutron energy, shape (n_steps, n_levels)
+        enmax: ndarray - Maximum lab neutron energy, shape (n_steps, n_levels)
+        coeffs_padded: ndarray - Legendre coefficients, shape (n_valid, max_L+1),
+            padded with zeros. Use [1, 0, 0, ...] for the isotropic fallback.
+
+    Returns:
+        ndarray - Accumulated spectrum, shape (nng,)
+    """
+    nng = len(b_lo)
+    n_valid = len(valid_i)
+    if n_valid == 0:
+        return np.zeros(nng)
+
+    enmin_k = enmin[valid_i, valid_j]           # (n_valid,)
+    enmax_k = enmax[valid_i, valid_j]
+    y_k = yield_matrix[valid_i, valid_j]
+    half_w = (enmax_k - enmin_k) * 0.5
+    mid = (enmax_k + enmin_k) * 0.5
+
+    # Clip each neutron energy bin to each pair's kinematic band -> (nng, n_valid)
+    e_lo = np.maximum(b_lo[:, np.newaxis], enmin_k[np.newaxis, :])
+    e_hi = np.minimum(b_hi[:, np.newaxis], enmax_k[np.newaxis, :])
+    overlap = e_hi > e_lo
+
+    inv_half_w = (1.0 / half_w)[np.newaxis, :]
+    mid_row = mid[np.newaxis, :]
+    mu1 = (e_lo - mid_row) * inv_half_w
+    mu2 = (e_hi - mid_row) * inv_half_w
+
+    integral = (_legendre_antideriv_grid(coeffs_padded, mu2)
+                - _legendre_antideriv_grid(coeffs_padded, mu1))
+    contrib = np.where(overlap, y_k[np.newaxis, :] * integral, 0.0)
+    return contrib.sum(axis=1)
