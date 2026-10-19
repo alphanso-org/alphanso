@@ -154,14 +154,18 @@ def read_out(configs: List[Dict[str, Any]],
 
         if len(config_list) == 1:
             if '_result' in config_list[0]:
-                write_results_yaml(config_list[0]['_result'], source_dir)
+                write_results_yaml(
+                    config_list[0]['_result'],
+                    source_dir,
+                    calc_type=config_list[0].get('calc_type'))
         else:
             for i, config in enumerate(config_list):
                 if '_result' in config:
                     write_results_yaml(
                         config['_result'],
                         source_dir,
-                        filename=f"results_{i+1}.yaml")
+                        filename=f"results_{i+1}.yaml",
+                        calc_type=config.get('calc_type'))
 
     print(f"Created output directory structure: {output_dir}")
     return output_dir

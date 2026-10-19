@@ -175,12 +175,15 @@ Monoenergetic or polyenergetic alpha beam incident on a thick target.
 - `an_xs_data_dir` (str): Path to ($\alpha$,n) cross-section data directory
 - `stopping_power_data_dir` (str): Path to stopping power data directory
 
-**Results**:
+**Results** (yields are per incident alpha when `beam_intensities` sum to 1):
 
-- `an_yield`: Neutron production rate (n/$\alpha$)
-- `an_spectrum`: Normalized neutron energy spectrum
-- `an_spectrum_absolute`: Absolute neutron spectrum
-- `neutron_energy_bins`: Energy bins for spectrum (MeV)
+- `an_yield`: Neutron yield (n/$\alpha$)
+- `an_spectrum`: Normalized neutron energy spectrum (fraction of neutrons in each energy bin)
+- `an_spectrum_absolute`: Absolute neutron spectrum (n/$\alpha$ per energy bin)
+- `neutron_energy_bins`: Energy bin edges (MeV)
+- `spectrum_energy_bins`: Same bin edges as `neutron_energy_bins` (MeV)
+- `gamma_yield`: Alpha-induced gamma yield (gammas/$\alpha$)
+- `gamma_lines`: Discrete gamma lines as [energy (MeV), intensity (gammas/$\alpha$)] pairs
 
 ---
 
@@ -202,15 +205,27 @@ Uniform mixture of alpha-emitting isotopes and target materials.
 - `stopping_power_data_dir` (str): Path to stopping power data
 - `decay_data_dir` (str): Path to decay/branching data
 
-**Results**:
+**Results** (yields are per gram of material):
 
 - `an_yield`: Alpha-n neutron yield (n/s/g)
 - `sf_yield`: Spontaneous fission neutron yield (n/s/g)
 - `combined_yield`: Combined (alpha-n + SF) yield (n/s/g) - default output
-- `an_spectrum`: Normalized alpha-n neutron spectrum
-- `sf_spectrum`: Normalized spontaneous fission neutron spectrum
-- `combined_spectrum`: Combined normalized neutron spectrum
-- `neutron_energy_bins`: Energy bins (MeV)
+- `an_spectrum`: Normalized alpha-n neutron spectrum (fraction of neutrons in each energy bin)
+- `sf_spectrum`: Normalized spontaneous fission neutron spectrum (fraction of neutrons in each energy bin)
+- `combined_spectrum`: Combined normalized neutron spectrum (fraction of neutrons in each energy bin)
+- `neutron_energy_bins`: Energy bin edges (MeV)
+- `average_energy`, `average_energy_an`, `average_energy_sf`: Average neutron energy of the combined, alpha-n, and SF spectra (MeV)
+- `delayedn_strength`: Delayed neutron yield from spontaneous fission (n/s/g)
+- `delayedn_spectrum`: Normalized delayed neutron spectrum (fraction of neutrons in each energy bin)
+- `gamma_yield`: Alpha-induced gamma yield (gammas/s/g)
+- `gamma_lines`: Discrete gamma lines as [energy (MeV), intensity (gammas/s/g)] pairs
+- `sf_contributors`: One entry per spontaneous fission nuclide (only when SF nuclides are present), with:
+  - `zaid`, `name`: Nuclide identifiers
+  - `sf_yield`, `delayedn_yield`: SF and delayed neutron yields (n/s/g)
+  - `sf_branching`: Fraction of decays that are spontaneous fission
+  - `nubar`, `nu_delayed`: Average neutrons and delayed neutrons per fission
+  - `watt_a` (MeV), `watt_b` (1/MeV): Watt spectrum parameters
+  - `endf_avg_energy`: Average SF neutron energy from ENDF (MeV)
 
 ---
 
@@ -234,12 +249,15 @@ Planar interface between an alpha-emitting source region and a target region.
 - `stopping_power_data_dir` (str): Stopping power data path
 - `decay_data_dir` (str): Decay data path
 
-**Results**:
+**Results** (yields are per cm^2 of interface area):
 
-- `an_yield`: Neutron yield per cm^2 of interface (n/s/cm^2)
-- `an_spectrum`: Normalized spectrum
-- `an_spectrum_absolute`: Absolute spectrum (n/s/cm^2/MeV)
-- `neutron_energy_bins`: Energy bins (MeV)
+- `an_yield`: Neutron yield (n/s/cm^2)
+- `an_spectrum`: Normalized spectrum (fraction of neutrons in each energy bin)
+- `an_spectrum_absolute`: Absolute spectrum (n/s/cm^2 per energy bin)
+- `neutron_energy_bins`: Energy bin edges (MeV)
+- `spectrum_energy_bins`: Same bin edges as `neutron_energy_bins` (MeV)
+- `gamma_yield`: Alpha-induced gamma yield (gammas/s/cm^2)
+- `gamma_lines`: Discrete gamma lines as [energy (MeV), intensity (gammas/s/cm^2)] pairs
 
 ---
 
@@ -268,18 +286,24 @@ Multi-layer sandwich geometry with volumetric formulation. Alpha source (Region 
 - `stopping_power_data_dir` (str): Stopping power data path
 - `decay_data_dir` (str): Decay data path
 
-**Results**:
+**Results** (yields are per cm^2 of interface area):
 
 - `an_yield`: Total neutron yield (n/s/cm^2)
 - `yield_target`: Yield in target region (n/s/cm^2)
 - `yield_layers`: Per-layer yield breakdown (list of n/s/cm^2)
-- `yield_ab_b`: Yield at AB interface in first layer material
-- `yield_bc_b`: Yield at BC interface in last layer material
-- `yield_bc_c`: Yield at BC interface in target material
-- `an_spectrum`: Normalized total spectrum
-- `an_spectrum_absolute`: Absolute total spectrum
-- `spectrum_layers`: Per-layer spectrum contributions
-- `neutron_energy_bins`: Energy bins (MeV)
+- `yield_ab_b`: Yield at AB interface in first layer material (n/s/cm^2)
+- `yield_bc_b`: Yield at BC interface in last layer material (n/s/cm^2)
+- `yield_bc_c`: Yield at BC interface in target material (n/s/cm^2)
+- `an_spectrum`: Normalized total spectrum (fraction of neutrons in each energy bin)
+- `an_spectrum_absolute`: Absolute total spectrum (n/s/cm^2 per energy bin)
+- `spectrum_layers`: Per-layer absolute spectrum contributions (list of n/s/cm^2 per energy bin)
+- `neutron_energy_bins`: Energy bin edges (MeV)
+- `spectrum_energy_bins`: Same bin edges as `neutron_energy_bins` (MeV)
+- `gamma_yield`: Total alpha-induced gamma yield (gammas/s/cm^2)
+- `gamma_yield_target`: Gamma yield in target region (gammas/s/cm^2)
+- `gamma_yield_layers`: Per-layer gamma yield breakdown (list of gammas/s/cm^2)
+- `gamma_lines`: Discrete gamma lines from all regions as [energy (MeV), intensity (gammas/s/cm^2)] pairs
+- `gamma_lines_target`: Discrete gamma lines from the target region, in the same units as `gamma_lines`
 
 ## Material Definition Format
 
@@ -314,6 +338,10 @@ Mass fractions should sum to 1.0 for single-phase materials, but can exceed 1.0 
 ## Output Files
 
 When using the CLI, results are saved to `alphanso_output/<config_name>/` as `results.yaml`.
+
+Each `results.yaml` begins with a comment block listing the units of every result in the file. YAML loaders ignore the comments, so the data reads back unchanged.
+
+Spectra are given per energy bin, not per MeV: normalized spectra sum to 1, and absolute spectra sum to the total yield. Divide by the bin widths to get a spectrum per MeV. Energy bin edges are listed in ascending order.
 
 ## Custom Data Sources
 

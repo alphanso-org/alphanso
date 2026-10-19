@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `results.yaml` files now begin with a comment block listing the units of every result for the calculation type. YAML loaders ignore the comments, so the data reads back unchanged.
+
+### Documentation
+
+- Corrected the interface `an_spectrum_absolute` unit in the README: absolute spectra are per energy bin (n/s/cm^2 per bin), not per MeV.
+- Documented units for every result key of all four calculation types, including the gamma, delayed neutron, average energy, and `sf_contributors` outputs.
+
 ## [1.1.1] - 2026-09-24
 
 ### Fixed
