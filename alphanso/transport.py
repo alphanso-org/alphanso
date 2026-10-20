@@ -10,6 +10,7 @@ from .constants import AVOGADRO_NUM, ANEUT_MASS, ALPH_MASS
 from .atomic_data_loader import atomic_data
 from .parsers import (
     get_an_xs,
+    get_angular_distributions,
     get_branching_info,
     get_continuum_info,
     get_decay_spectrum,
@@ -26,6 +27,8 @@ from .utils import (
     matdef_to_zaids,
     rebin_endf_spectrum,
     _accumulate_spectrum_continuum_box,
+    _accumulate_spectrum_legendre,
+    _interpolate_legendre_coeffs,
     _preprocess_continuum_dist,
 )
 
@@ -171,6 +174,7 @@ class Transport(object):
 
         calculate_gammas = config.get('calculate_gammas', True)
         gamma_data_dir = config.get('gamma_data_dir')
+        use_legendre_angular = config.get('use_legendre_angular', False)
 
         if 'beam_intensities' in config:
             energies = config['beam_intensities']
@@ -191,7 +195,8 @@ class Transport(object):
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir
+            gamma_data_dir=gamma_data_dir,
+            use_legendre_angular=use_legendre_angular
         )
 
         p_total = beam_results['neutron_yield']
@@ -248,6 +253,7 @@ class Transport(object):
 
         calculate_gammas = config.get('calculate_gammas', True)
         gamma_data_dir = config.get('gamma_data_dir')
+        use_legendre_angular = config.get('use_legendre_angular', False)
 
         result = Transport.homogeneous_problem(
             matdef,
@@ -260,7 +266,8 @@ class Transport(object):
             stopping_power_data_dir=stopping_power_data_dir,
             decay_data_dir=decay_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir
+            gamma_data_dir=gamma_data_dir,
+            use_legendre_angular=use_legendre_angular
         )
 
         return result
@@ -279,7 +286,9 @@ class Transport(object):
             ep_branching,
             gamma_target=None,
             continuum_xs=None,
-            continuum_dist=None):
+            continuum_dist=None,
+            angular_dists=None,
+            level_indices=None):
         """
         Calculate neutron yield and energy spectrum from alpha slowing down in target.
 
@@ -303,6 +312,13 @@ class Transport(object):
             continuum_dist: dict, optional - MT=91 neutron energy distribution
                 {incident_energy_MeV: [(E_out_MeV, prob_1/MeV), ...]}. If None and
                 continuum_xs is not None, falls back to a kinematic box over [0, enmax_91].
+            angular_dists: dict, optional - Per-level Legendre angular distribution
+                data {level_idx: {alpha_energy_MeV: [a_0, a_1, ..., a_L]}}. When None
+                (the default) or absent for a given level, that level's discrete-level
+                neutrons are emitted isotropically. Requires level_indices to be used.
+            level_indices: list, optional - Maps column j of the yield matrix (i.e.
+                position j in energy_levels) back to the original level index used as
+                a key in angular_dists.
 
         Returns:
             tuple - (an_yield: float, spectrum: ndarray, gamma_yield: float, gamma_lines: list)
@@ -439,16 +455,42 @@ class Transport(object):
         if not np.any(valid_physics):
             return 0.0, spectrum, gamma_yield, gamma_lines
 
-        y_flat = yield_matrix[valid_physics]
-        w_flat = width_matrix[valid_physics]
-        enmin_flat = enmin[valid_physics]
-        enmax_flat = enmax[valid_physics]
-
         bin_edges = neutron_energy_bins
         b_lo = np.minimum(bin_edges[:-1], bin_edges[1:])
         b_hi = np.maximum(bin_edges[:-1], bin_edges[1:])
 
-        spectrum = _accumulate_spectrum(b_lo, b_hi, y_flat, w_flat, enmin_flat, enmax_flat)
+        if angular_dists is not None and level_indices is not None:
+            # Anisotropic emission: weight each discrete-level (alpha step, level)
+            # pair by its Legendre-expanded CM-frame angular distribution. Pairs with
+            # no tabulated coefficients fall back to isotropic ([1, 0, ...]), which
+            # reproduces the uniform _accumulate_spectrum result exactly.
+            valid_i, valid_j = np.where(valid_physics)
+            n_valid = len(valid_i)
+            coeff_list = []
+            max_n = 1
+            for k in range(n_valid):
+                c = _interpolate_legendre_coeffs(
+                    angular_dists.get(level_indices[int(valid_j[k])]),
+                    e_steps_valid[int(valid_i[k])])
+                if c is None:
+                    c = np.array([1.0])
+                coeff_list.append(c)
+                if len(c) > max_n:
+                    max_n = len(c)
+            coeffs_padded = np.zeros((n_valid, max_n))
+            for k, c in enumerate(coeff_list):
+                coeffs_padded[k, :len(c)] = c
+            spectrum = _accumulate_spectrum_legendre(
+                b_lo, b_hi,
+                valid_i.astype(np.int64), valid_j.astype(np.int64),
+                yield_matrix, enmin, enmax, coeffs_padded)
+        else:
+            y_flat = yield_matrix[valid_physics]
+            w_flat = width_matrix[valid_physics]
+            enmin_flat = enmin[valid_physics]
+            enmax_flat = enmax[valid_physics]
+            spectrum = _accumulate_spectrum(
+                b_lo, b_hi, y_flat, w_flat, enmin_flat, enmax_flat)
 
         if cont_yield_steps is not None:
             if continuum_dist is not None:
@@ -476,7 +518,8 @@ class Transport(object):
             an_xs_data_dir=None,
             stopping_power_data_dir=None,
             calculate_gammas=True,
-            gamma_data_dir=None):
+            gamma_data_dir=None,
+            use_legendre_angular=False):
         """
         Calculate neutron production from alpha beam incident on thick target.
 
@@ -495,6 +538,10 @@ class Transport(object):
                 containing ``Alpha/Inelastic`` channel files and ``Gammas`` level
                 schemes); defaults to the ``gamma`` subdirectory of the resolved
                 nuclear-data root.
+            use_legendre_angular: bool, optional - When True, weight discrete-level
+                neutron emission by the per-level Legendre angular distributions read
+                from the (alpha,n) data files, falling back to isotropic emission for
+                any level without tabulated coefficients. Default False (isotropic).
 
         Returns:
             dict - Results dictionary containing:
@@ -551,6 +598,7 @@ class Transport(object):
                 'gamma_target': gamma_target,
                 'continuum_xs': None,
                 'continuum_dist': None,
+                'angular_dists': None,
             }
 
         target_data_list = []
@@ -599,6 +647,10 @@ class Transport(object):
             continuum_xs_data, continuum_dist_data = get_continuum_info(
                 zaid, an_xs_data_source)
 
+            angular_dists_data = (
+                get_angular_distributions(zaid, an_xs_data_source)
+                if use_legendre_angular else None)
+
             target_data_list.append({
                 'zaid': zaid,
                 'afrac': afrac,
@@ -612,6 +664,7 @@ class Transport(object):
                 'gamma_target': gamma_target,
                 'continuum_xs': continuum_xs_data,
                 'continuum_dist': continuum_dist_data,
+                'angular_dists': angular_dists_data,
             })
 
         def _worker(e, intensity, t_data):
@@ -621,9 +674,10 @@ class Transport(object):
             # possible for this source line; the gamma side has its own
             # channel thresholds and is evaluated regardless.
             valid_levels = []
+            valid_level_indices = []
             neutron_possible = t_data['an_xs_binned'] is not None and t_data['energy_keys']
             if neutron_possible and e >= min(t_data['energy_keys']):
-                for level_energy in t_data['level_energies']:
+                for level_idx, level_energy in enumerate(t_data['level_energies']):
                     q_eff = t_data['q_value'] - level_energy
                     if q_eff < 0:
                         threshold = -q_eff * (ANEUT_MASS + t_data['product_mass']) / t_data['target_mass_amu']
@@ -631,6 +685,7 @@ class Transport(object):
                         threshold = 0
                     if e >= threshold and level_energy >= 0 and level_energy < 50:
                         valid_levels.append(level_energy)
+                        valid_level_indices.append(level_idx)
 
             if not valid_levels and gamma_target is None:
                 return None
@@ -650,6 +705,8 @@ class Transport(object):
                 gamma_target=gamma_target,
                 continuum_xs=t_data.get('continuum_xs'),
                 continuum_dist=t_data.get('continuum_dist'),
+                angular_dists=t_data.get('angular_dists'),
+                level_indices=valid_level_indices,
             )
             return {
                 'p': p * scale,
@@ -710,7 +767,8 @@ class Transport(object):
             stopping_power_data_dir=None,
             decay_data_dir=None,
             calculate_gammas=True,
-            gamma_data_dir=None):
+            gamma_data_dir=None,
+            use_legendre_angular=False):
         """
         Calculate neutron production from uniform mixture of alpha emitters in target material.
 
@@ -775,7 +833,8 @@ class Transport(object):
             neutron_energy_bins=neutron_energy_bins,
             an_xs_data_dir=an_xs_data_dir, stopping_power_data_dir=stopping_power_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir)
+            gamma_data_dir=gamma_data_dir,
+            use_legendre_angular=use_legendre_angular)
 
         p_total_an = beam_results['neutron_yield']
         spectrum_an = beam_results['neutron_spectrum']
@@ -1372,6 +1431,7 @@ class Transport(object):
 
         calculate_gammas = config.get('calculate_gammas', True)
         gamma_data_dir = config.get('gamma_data_dir')
+        use_legendre_angular = config.get('use_legendre_angular', False)
 
         interface_spectrum = Transport.interface_alpha_term(
             source_matdef=source_matdef,
@@ -1392,7 +1452,8 @@ class Transport(object):
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir
+            gamma_data_dir=gamma_data_dir,
+            use_legendre_angular=use_legendre_angular
         )
 
         p_total = beam_results['neutron_yield']
@@ -1757,6 +1818,7 @@ class Transport(object):
 
         calculate_gammas = config.get('calculate_gammas', True)
         gamma_data_dir = config.get('gamma_data_dir')
+        use_legendre_angular = config.get('use_legendre_angular', False)
 
         num_alpha_groups = config.get('num_alpha_groups', 15000)
         min_alpha_energy = config.get('min_alpha_energy', 1e-11)
@@ -1803,7 +1865,8 @@ class Transport(object):
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir
+            gamma_data_dir=gamma_data_dir,
+            use_legendre_angular=use_legendre_angular
         )
         yield_ab_b = results_ab_b['neutron_yield']
         spectrum_ab_b = results_ab_b['neutron_spectrum']
@@ -1820,7 +1883,8 @@ class Transport(object):
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir
+            gamma_data_dir=gamma_data_dir,
+            use_legendre_angular=use_legendre_angular
         )
         yield_bc_b = results_bc_b['neutron_yield']
         spectrum_bc_b = results_bc_b['neutron_spectrum']
@@ -1836,7 +1900,8 @@ class Transport(object):
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir
+            gamma_data_dir=gamma_data_dir,
+            use_legendre_angular=use_legendre_angular
         )
         yield_bc_c = results_bc_c['neutron_yield']
         spectrum_bc_c = results_bc_c['neutron_spectrum']
@@ -1878,7 +1943,8 @@ class Transport(object):
                     an_xs_data_dir=an_xs_data_dir,
                     stopping_power_data_dir=stopping_power_data_dir,
                     calculate_gammas=calculate_gammas,
-                    gamma_data_dir=gamma_data_dir
+                    gamma_data_dir=gamma_data_dir,
+                    use_legendre_angular=use_legendre_angular
                 )
                 yield_entering = results_entering['neutron_yield']
                 spectrum_entering = results_entering['neutron_spectrum']
@@ -1912,7 +1978,8 @@ class Transport(object):
                     an_xs_data_dir=an_xs_data_dir,
                     stopping_power_data_dir=stopping_power_data_dir,
                     calculate_gammas=calculate_gammas,
-                    gamma_data_dir=gamma_data_dir
+                    gamma_data_dir=gamma_data_dir,
+                    use_legendre_angular=use_legendre_angular
                 )
                 yield_exiting = results_exiting['neutron_yield']
                 spectrum_exiting = results_exiting['neutron_spectrum']
