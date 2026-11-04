@@ -182,6 +182,11 @@ def _validate_and_normalize_config(config, config_id):
         raise ValueError(
             f"Configuration {config_id} has invalid calc_type: {calc_type}. Must be 'beam', 'homogeneous', 'interface', or 'sandwich'")
 
+    for field in ('density', 'target_density'):
+        if field in config and config[field] <= 0:
+            raise ValueError(
+                f"Configuration {config_id} {field} must be positive, got {config[field]}")
+
     if calc_type == 'beam':
         if 'beam_energy' not in config and 'beam_intensities' not in config:
             raise ValueError(

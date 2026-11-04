@@ -66,6 +66,9 @@ Every channel contributes ``integral( sigma_ch(E) / S(E) * L_ch(E, E_gamma) dE )
 per source alpha, where ``S`` is the material stopping power and ``L_ch`` the
 line vector described above; the integral shares the alpha slowing-down grid
 of the (alpha,n) calculation (`Transport._integrate_over_ebins`).
+
+The line energies here are rest-frame energies.  ``gamma_doppler`` turns the
+reactions tallied by this module into a Doppler-broadened binned spectrum.
 """
 
 import gzip
@@ -292,6 +295,22 @@ class LevelScheme:
     def lowest_level_energy(self) -> float:
         return self.level_energies[0]
 
+    def branches(self, level_idx: int) -> List[Tuple[float, float, Optional[int]]]:
+        """Populated decay branches of a level: [(E_gamma_MeV, probability, next_level), ...]."""
+        gammas = self.gammas_per_level[level_idx]
+        if not gammas:
+            return []
+        weights = np.array([w for _, w, _ in gammas], dtype=float)
+        total = weights.sum()
+        if total > 0:
+            probs = weights / total
+        else:
+            # G4's cumulative sampling selects the last entry when all
+            # weights are zero.
+            probs = np.zeros(len(gammas))
+            probs[-1] = 1.0
+        return [(egam, p, nxt) for (egam, _w, nxt), p in zip(gammas, probs) if p > 0.0]
+
     def expected_lines(self, level_idx: int) -> Dict[float, float]:
         """
         Expected gamma line intensities for one de-excitation of ``level_idx``.
@@ -311,22 +330,11 @@ class LevelScheme:
         if level_idx in visiting:
             logger.warning("Cyclic gamma cascade detected at level %d; truncating", level_idx)
             return {}
-        gammas = self.gammas_per_level[level_idx]
-        if not gammas:
+        branches = self.branches(level_idx)
+        if not branches:
             return {}
-        weights = np.array([w for _, w, _ in gammas], dtype=float)
-        total = weights.sum()
-        if total > 0:
-            probs = weights / total
-        else:
-            # G4's cumulative sampling selects the last entry when all
-            # weights are zero.
-            probs = np.zeros(len(gammas))
-            probs[-1] = 1.0
         out: Dict[float, float] = defaultdict(float)
-        for (egam, _w, nxt), p in zip(gammas, probs):
-            if p <= 0.0:
-                continue
+        for egam, p, nxt in branches:
             if egam > 0.0:
                 out[egam] += p
             if nxt is not None:
@@ -528,7 +536,9 @@ class GammaChannel:
         self.label = label
         self.xs_e = xs_e            # MeV
         self.xs_v = xs_v            # barns
+        self.residual: Optional[Tuple[int, int]] = None  # (Z, A) of the recoiling nucleus
         # discrete / continuum
+        self.level: Optional[int] = None        # residual level populated by the channel
         self.lines: Dict[float, float] = {}
         self.e_excitation: Optional[float] = None
         self.q_ground: Optional[float] = None   # QI of the ground-state channel (MeV)
@@ -537,6 +547,7 @@ class GammaChannel:
         self.q_value: Optional[float] = None    # true channel Q (MeV)
         self.products: List[_MF6Product] = []
         self.walk_cache: Dict[int, Dict[float, float]] = {}
+        self.walk_level_cache: Dict[int, List[int]] = {}
         # photon-data
         self.photon_multiplicity: Optional[Tuple[np.ndarray, np.ndarray]] = None
         self.photon_spectra: Optional[list] = None
@@ -637,6 +648,9 @@ def _build_f01_channels(path: str, z: int, a: int,
         if not lines:
             continue
         ch = GammaChannel(kind, f"MT{mt}", sec.xs_e, sec.xs_v)
+        ch.residual = (res_z, res_a)
+        ch.level = level
+        ch.scheme = scheme
         ch.lines = lines
         ch.e_excitation = e_exc
         ch.q_ground = qi0
@@ -678,6 +692,8 @@ def _build_multiparticle_channels(path: str, fs_dir: str, z: int, a: int,
     if photon is not None and photon.spectra is not None:
         ch = GammaChannel(GammaChannel.KIND_PHOTON_DATA, f"{fs_dir}-photon",
                           xs.xs_e, xs.xs_v)
+        ch.residual = (res_z, res_a)
+        ch.products = products
         ch.photon_multiplicity = (photon.yield_e, photon.yield_v)
         ch.photon_spectra = photon.spectra
         channels.append(ch)
@@ -685,6 +701,7 @@ def _build_multiparticle_channels(path: str, fs_dir: str, z: int, a: int,
     scheme = _load_level_scheme(gammas_dir, res_z, res_a)
     if scheme is not None:
         ch = GammaChannel(GammaChannel.KIND_WALK, fs_dir, xs.xs_e, xs.xs_v)
+        ch.residual = (res_z, res_a)
         ch.scheme = scheme
         ch.q_value = xs.qi
         ch.products = products
@@ -692,19 +709,33 @@ def _build_multiparticle_channels(path: str, fs_dir: str, z: int, a: int,
     return channels
 
 
-def _walk_lines(scheme: LevelScheme, budget: float) -> Dict[float, float]:
-    """Expected lines from the BaseFS level walk for one excitation budget."""
-    out: Dict[float, float] = defaultdict(float)
-    guard = 0
-    while budget >= scheme.lowest_level_energy and guard < 100:
-        guard += 1
+def walk_levels(scheme: LevelScheme, budget: float) -> List[int]:
+    """Levels visited by the BaseFS level walk for one excitation budget."""
+    visited: List[int] = []
+    while budget >= scheme.lowest_level_energy and len(visited) < 100:
         idx = scheme.highest_level_at_or_below(budget)
         if idx is None:
             break
+        visited.append(idx)
+        budget -= scheme.level_energies[idx]
+    return visited
+
+
+def _walk_lines(scheme: LevelScheme, budget: float) -> Dict[float, float]:
+    """Expected lines from the BaseFS level walk for one excitation budget."""
+    out: Dict[float, float] = defaultdict(float)
+    for idx in walk_levels(scheme, budget):
         for e, i in scheme.expected_lines(idx).items():
             out[e] += i
-        budget -= scheme.level_energies[idx]
     return dict(out)
+
+
+def walk_budget(ch: GammaChannel, e_alpha: np.ndarray, cm_factor: float) -> np.ndarray:
+    """Mean excitation energy left for a level-walk channel at alpha energies ``e_alpha``."""
+    budget = e_alpha * cm_factor + ch.q_value
+    for prod in ch.products:
+        budget = budget - prod.multiplicity(e_alpha) * prod.mean_energy(e_alpha)
+    return budget
 
 
 def get_gamma_target_data(zaid: int, gamma_data_root: str) -> Optional[GammaTargetData]:
@@ -759,7 +790,8 @@ def _get_gamma_target_data_cached(zaid: int, root: str) -> Optional[GammaTargetD
 
 def compute_gamma_production(e_steps: np.ndarray, de: np.ndarray,
                              stopping: np.ndarray,
-                             target: GammaTargetData) -> Tuple[float, Dict[float, float]]:
+                             target: GammaTargetData,
+                             tally=None) -> Tuple[float, Dict[float, float]]:
     """
     Thick-target gamma production for one slowing-down grid.
 
@@ -768,6 +800,8 @@ def compute_gamma_production(e_steps: np.ndarray, de: np.ndarray,
         de: energy-step widths (MeV)
         stopping: stopping power at the midpoints (MeV cm^2 / atom)
         target: channel data from :func:`get_gamma_target_data`
+        tally: optional ``gamma_doppler.ReactionTally`` that records the reactions
+            behind each line for Doppler broadening
 
     Returns:
         (gamma_yield, lines): total gammas per source alpha and the discrete
@@ -792,22 +826,25 @@ def compute_gamma_production(e_steps: np.ndarray, de: np.ndarray,
             total = float(pop[active].sum())
             for e_g, i_g in ch.lines.items():
                 lines[e_g] += total * i_g
+            if tally is not None:
+                tally.add_reactions(ch, e_ok[active], pop[active])
 
         elif ch.kind == GammaChannel.KIND_CONTINUUM:
             # ParticleHP fixed-excitation rule with an affordability guard
             affordable = (e_ok * cm + ch.q_ground + AFFORDABILITY_TOL_MEV
                           >= ch.e_excitation)
-            total = float(pop[active & affordable].sum())
+            emitting = active & affordable
+            total = float(pop[emitting].sum())
             if total > 0:
                 for e_g, i_g in ch.lines.items():
                     lines[e_g] += total * i_g
+                if tally is not None:
+                    tally.add_reactions(ch, e_ok[emitting], pop[emitting])
 
         elif ch.kind == GammaChannel.KIND_WALK:
             scheme = ch.scheme
             e_act = e_ok[active]
-            budget = e_act * cm + ch.q_value
-            for prod in ch.products:
-                budget = budget - prod.multiplicity(e_act) * prod.mean_energy(e_act)
+            budget = walk_budget(ch, e_act, cm)
             pop_act = pop[active]
             feasible = budget >= scheme.lowest_level_energy
             if not np.any(feasible):
@@ -822,9 +859,11 @@ def compute_gamma_production(e_steps: np.ndarray, de: np.ndarray,
                         scheme, bucket * WALK_BUDGET_BUCKET_MEV)
                 for e_g, i_g in ch.walk_cache[bucket].items():
                     lines[e_g] += w * i_g
+            if tally is not None:
+                tally.add_reactions(ch, e_act[feasible], pops)
 
         elif ch.kind == GammaChannel.KIND_PHOTON_DATA:
-            _accumulate_photon_data_channel(ch, e_ok, pop, lines)
+            _accumulate_photon_data_channel(ch, e_ok, pop, lines, tally)
 
     total_yield = float(sum(lines.values()))
     return total_yield, dict(lines)
@@ -834,9 +873,33 @@ def compute_gamma_production(e_steps: np.ndarray, de: np.ndarray,
 # Explicit photon-product (TENDL F02) support
 # ---------------------------------------------------------------------------
 
+def photon_panel_emission(ch: GammaChannel, panel: int):
+    """
+    Emission of one incident-energy panel of an explicit photon product.
+
+    Returns None for an empty panel, otherwise (disc_e, disc_p, norm, cont_e,
+    cont_frac): the discrete lines with their probabilities before dividing by
+    ``norm``, and the continuum grid with the fraction of photons collapsed
+    onto each point (trapezoid weights).
+    """
+    _, disc_e, disc_p, cont_e, cont_pdf = ch.photon_spectra[panel]
+    cont_norm = float(np.trapezoid(cont_pdf, cont_e)) if cont_e.size > 1 else 0.0
+    norm = float(disc_p.sum()) + cont_norm
+    if norm <= 0:
+        return None
+    weights = np.zeros_like(cont_e)
+    if cont_norm > 0:
+        d = np.diff(cont_e)
+        weights[:-1] += 0.5 * d * cont_pdf[:-1]
+        weights[1:] += 0.5 * d * cont_pdf[1:]
+        weights /= norm
+    return disc_e, disc_p, norm, cont_e, weights
+
+
 def _accumulate_photon_data_channel(ch: GammaChannel, e_ok: np.ndarray,
                                     pop: np.ndarray,
-                                    lines: Dict[float, float]) -> None:
+                                    lines: Dict[float, float],
+                                    tally=None) -> None:
     """
     Integrate an explicit MF6 photon product: reactions x multiplicity, with
     each tabulated spectrum (discrete lines plus continuum) applied to the
@@ -848,6 +911,8 @@ def _accumulate_photon_data_channel(ch: GammaChannel, e_ok: np.ndarray,
     photons = pop * mult
     if photons.sum() <= 0:
         return
+    if tally is not None:
+        tally.add_reactions(ch, e_ok, photons)
     e_grid = np.array([s[0] for s in ch.photon_spectra])
     idx = np.clip(np.searchsorted(e_grid, e_ok, side='right') - 1,
                   0, len(e_grid) - 1)
@@ -855,23 +920,18 @@ def _accumulate_photon_data_channel(ch: GammaChannel, e_ok: np.ndarray,
         w = float(photons[idx == panel].sum())
         if w <= 0:
             continue
-        _, disc_e, disc_p, cont_e, cont_pdf = ch.photon_spectra[panel]
-        cont_norm = float(np.trapezoid(cont_pdf, cont_e)) if cont_e.size > 1 else 0.0
-        norm = float(disc_p.sum()) + cont_norm
-        if norm <= 0:
+        emission = photon_panel_emission(ch, panel)
+        if emission is None:
             continue
+        disc_e, disc_p, norm, cont_e, cont_frac = emission
         for e_g, p_g in zip(disc_e, disc_p):
             if p_g > 0 and e_g > 0:
                 lines[round(float(e_g), 6)] += w * p_g / norm
-        if cont_norm > 0:
-            weights = np.zeros_like(cont_e)
-            d = np.diff(cont_e)
-            weights[:-1] += 0.5 * d * cont_pdf[:-1]
-            weights[1:] += 0.5 * d * cont_pdf[1:]
-            weights /= norm
-            for e_g, frac in zip(cont_e, weights):
-                if frac > 0 and e_g > 0:
-                    lines[round(float(e_g), 6)] += w * frac
+        for e_g, frac in zip(cont_e, cont_frac):
+            if frac > 0 and e_g > 0:
+                lines[round(float(e_g), 6)] += w * frac
+        if tally is not None:
+            tally.add_photon_panel(ch, panel, w)
 
 
 def clear_caches() -> None:

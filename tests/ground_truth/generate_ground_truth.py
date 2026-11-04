@@ -57,7 +57,9 @@ def generate_ground_truth_for_configs(configs: list, calc_type: str) -> dict:
         name = config['name']
         print(f"  Running {name}...")
         try:
-            result = Transport.calculate(config)
+            # The binned gamma spectrum has its own tests and would add megabytes
+            # to these reference files.
+            result = Transport.calculate({**config, "gamma_doppler": False})
             results[name] = serialize_results(result)
             print(f"    OK (an_yield={result.get('an_yield', 'N/A'):.3e})")
         except Exception as e:

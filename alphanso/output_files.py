@@ -21,6 +21,7 @@ _YIELD_NOTES = {
 
 _ENERGY_BINS = "MeV (bin edges, ascending)"
 _NORMALIZED_SPECTRUM = "fraction of neutrons in each energy bin (sums to 1)"
+_DENSITY = "g/cm^3"
 
 _SF_CONTRIBUTOR_UNITS = {
     "zaid": "identifier",
@@ -66,6 +67,15 @@ def result_units(calc_type: str) -> dict:
         "gamma_yield_layers": f"{gammas}, one value per intermediate layer",
         "gamma_lines": gamma_lines,
         "gamma_lines_target": gamma_lines,
+        "gamma_energy_bins": _ENERGY_BINS,
+        "gamma_spectrum": "fraction of gammas in each energy bin (sums to 1), Doppler broadened",
+        "gamma_spectrum_absolute": f"{gammas} per energy bin, Doppler broadened",
+        "gamma_spectrum_target": f"{gammas} per energy bin, Doppler broadened",
+        "gamma_spectrum_layers": f"{gammas} per energy bin, Doppler broadened, one spectrum per intermediate layer",
+        "gamma_recoil_density": _DENSITY,
+        "gamma_recoil_density_target": _DENSITY,
+        "gamma_recoil_density_layers": f"{_DENSITY}, one value per intermediate layer",
+        "gamma_recoil_density_assumed": "true if the default atom density was used",
         "sf_contributors": "one entry per spontaneous-fission nuclide",
     }
 

@@ -4,6 +4,9 @@
 # - calc_type: Type of calculation to perform
 # - matdef: Material definition dictionary ({zaid: mass_fraction})
 # - decay_data_dir: [optional] Path to decay data
+# - gamma_doppler: [optional] Calculate the Doppler-broadened gamma spectrum (default: true)
+# - gamma_energy_bins: [optional] Gamma spectrum bin edges in MeV (default: 1 keV bins over 0-15 MeV)
+# - density: [optional] Density of the solid in g/cm^3, for recoil slowing
 
 name: "Example Homogeneous Source"
 calc_type: "homogeneous"
