@@ -16,7 +16,7 @@ Applications include reactor design, nuclear safeguards, radioactive waste manag
 
 - **Multiple Geometry Types**: Beam, homogeneous, interface, and sandwich configurations
 - **Accurate Physics**: Up-to-date nuclear data with customizable data sources
-- **Complete Output**: Neutron yields and energy spectra, plus the alpha-induced prompt gamma source term (yields and discrete lines, validated against SaG4n/Geant4)
+- **Complete Output**: Neutron yields and energy spectra, plus the alpha-induced prompt gamma source term (yields and discrete lines, validated against SaG4n/Geant4, and a Doppler-broadened spectrum)
 - **Command-Line & Python API**: Use via CLI or integrate into Python workflows
 
 ## Installation
@@ -174,6 +174,9 @@ Monoenergetic or polyenergetic alpha beam incident on a thick target.
 - `neutron_energy_bins` (list or NumPy array, optional): Neutron energy bin edges in MeV. Three-element lists are shorthand `[start, stop, num_points]` for linearly spaced edges; lists of other lengths and all NumPy arrays specify explicit edges. Default: 101 edges spanning 0–15 MeV (100 bins).
 - `an_xs_data_dir` (str): Path to ($\alpha$,n) cross-section data directory
 - `stopping_power_data_dir` (str): Path to stopping power data directory
+- `gamma_doppler` (bool, default: `true`): Calculate the Doppler-broadened gamma spectrum (see [Gamma Line Shapes](#gamma-line-shapes))
+- `gamma_energy_bins` (list or NumPy array, optional): Gamma spectrum bin edges in MeV, with the same input rules as `neutron_energy_bins`. Default: 1 keV bins spanning 0–15 MeV.
+- `density` (float, optional): Density of the solid material in g/cm^3, used for recoil slowing. Default: assume 8e22 atoms/cm^3.
 
 **Results** (yields are per incident alpha when `beam_intensities` sum to 1):
 
@@ -184,6 +187,11 @@ Monoenergetic or polyenergetic alpha beam incident on a thick target.
 - `spectrum_energy_bins`: Same bin edges as `neutron_energy_bins` (MeV)
 - `gamma_yield`: Alpha-induced gamma yield (gammas/$\alpha$)
 - `gamma_lines`: Discrete gamma lines as [energy (MeV), intensity (gammas/$\alpha$)] pairs
+- `gamma_energy_bins`: Gamma spectrum bin edges (MeV)
+- `gamma_spectrum`: Normalized Doppler-broadened gamma spectrum (fraction of gammas in each energy bin)
+- `gamma_spectrum_absolute`: Absolute Doppler-broadened gamma spectrum (gammas/$\alpha$ per energy bin)
+- `gamma_recoil_density`: Density used for recoil slowing (g/cm^3)
+- `gamma_recoil_density_assumed`: `true` if the default atom density was used
 
 ---
 
@@ -204,6 +212,9 @@ Uniform mixture of alpha-emitting isotopes and target materials.
 - `an_xs_data_dir` (str): Path to cross-section data
 - `stopping_power_data_dir` (str): Path to stopping power data
 - `decay_data_dir` (str): Path to decay/branching data
+- `gamma_doppler` (bool, default: `true`): Calculate the Doppler-broadened gamma spectrum (see [Gamma Line Shapes](#gamma-line-shapes))
+- `gamma_energy_bins` (list or NumPy array, optional): Gamma spectrum bin edges in MeV, with the same input rules as `neutron_energy_bins`. Default: 1 keV bins spanning 0–15 MeV.
+- `density` (float, optional): Density of the solid material in g/cm^3, used for recoil slowing. Default: assume 8e22 atoms/cm^3.
 
 **Results** (yields are per gram of material):
 
@@ -219,6 +230,11 @@ Uniform mixture of alpha-emitting isotopes and target materials.
 - `delayedn_spectrum`: Normalized delayed neutron spectrum (fraction of neutrons in each energy bin)
 - `gamma_yield`: Alpha-induced gamma yield (gammas/s/g)
 - `gamma_lines`: Discrete gamma lines as [energy (MeV), intensity (gammas/s/g)] pairs
+- `gamma_energy_bins`: Gamma spectrum bin edges (MeV)
+- `gamma_spectrum`: Normalized Doppler-broadened gamma spectrum (fraction of gammas in each energy bin)
+- `gamma_spectrum_absolute`: Absolute Doppler-broadened gamma spectrum (gammas/s/g per energy bin)
+- `gamma_recoil_density`: Density used for recoil slowing (g/cm^3)
+- `gamma_recoil_density_assumed`: `true` if the default atom density was used
 - `sf_contributors`: One entry per spontaneous fission nuclide (only when SF nuclides are present), with:
   - `zaid`, `name`: Nuclide identifiers
   - `sf_yield`, `delayedn_yield`: SF and delayed neutron yields (n/s/g)
@@ -248,6 +264,9 @@ Planar interface between an alpha-emitting source region and a target region.
 - `an_xs_data_dir` (str): Cross-section data path
 - `stopping_power_data_dir` (str): Stopping power data path
 - `decay_data_dir` (str): Decay data path
+- `gamma_doppler` (bool, default: `true`): Calculate the Doppler-broadened gamma spectrum (see [Gamma Line Shapes](#gamma-line-shapes))
+- `gamma_energy_bins` (list or NumPy array, optional): Gamma spectrum bin edges in MeV, with the same input rules as `neutron_energy_bins`. Default: 1 keV bins spanning 0–15 MeV.
+- `target_density` (float, optional): Density of the solid target in g/cm^3, used for recoil slowing. Default: assume 8e22 atoms/cm^3.
 
 **Results** (yields are per cm^2 of interface area):
 
@@ -258,6 +277,11 @@ Planar interface between an alpha-emitting source region and a target region.
 - `spectrum_energy_bins`: Same bin edges as `neutron_energy_bins` (MeV)
 - `gamma_yield`: Alpha-induced gamma yield (gammas/s/cm^2)
 - `gamma_lines`: Discrete gamma lines as [energy (MeV), intensity (gammas/s/cm^2)] pairs
+- `gamma_energy_bins`: Gamma spectrum bin edges (MeV)
+- `gamma_spectrum`: Normalized Doppler-broadened gamma spectrum (fraction of gammas in each energy bin)
+- `gamma_spectrum_absolute`: Absolute Doppler-broadened gamma spectrum (gammas/s/cm^2 per energy bin)
+- `gamma_recoil_density`: Density used for recoil slowing (g/cm^3)
+- `gamma_recoil_density_assumed`: `true` if the default atom density was used
 
 ---
 
@@ -285,6 +309,9 @@ Multi-layer sandwich geometry with volumetric formulation. Alpha source (Region 
 - `an_xs_data_dir` (str): Cross-section data path
 - `stopping_power_data_dir` (str): Stopping power data path
 - `decay_data_dir` (str): Decay data path
+- `gamma_doppler` (bool, default: `true`): Calculate the Doppler-broadened gamma spectrum (see [Gamma Line Shapes](#gamma-line-shapes))
+- `gamma_energy_bins` (list or NumPy array, optional): Gamma spectrum bin edges in MeV, with the same input rules as `neutron_energy_bins`. Default: 1 keV bins spanning 0–15 MeV.
+- `target_density` (float, optional): Density of the solid target in g/cm^3, used for recoil slowing. Default: assume 8e22 atoms/cm^3.
 
 **Results** (yields are per cm^2 of interface area):
 
@@ -304,6 +331,14 @@ Multi-layer sandwich geometry with volumetric formulation. Alpha source (Region 
 - `gamma_yield_layers`: Per-layer gamma yield breakdown (list of gammas/s/cm^2)
 - `gamma_lines`: Discrete gamma lines from all regions as [energy (MeV), intensity (gammas/s/cm^2)] pairs
 - `gamma_lines_target`: Discrete gamma lines from the target region, in the same units as `gamma_lines`
+- `gamma_energy_bins`: Gamma spectrum bin edges (MeV)
+- `gamma_spectrum`: Normalized Doppler-broadened gamma spectrum (fraction of gammas in each energy bin)
+- `gamma_spectrum_absolute`: Absolute Doppler-broadened gamma spectrum (gammas/s/cm^2 per energy bin)
+- `gamma_spectrum_target`: Absolute gamma spectrum from the target region (gammas/s/cm^2 per energy bin)
+- `gamma_spectrum_layers`: Per-layer absolute gamma spectra (list of gammas/s/cm^2 per energy bin)
+- `gamma_recoil_density_target`: Target density used for recoil slowing (g/cm^3)
+- `gamma_recoil_density_layers`: Layer densities used for recoil slowing (list of g/cm^3)
+- `gamma_recoil_density_assumed`: `true` if the default atom density was used for the target
 
 ## Material Definition Format
 
@@ -342,6 +377,32 @@ When using the CLI, results are saved to `alphanso_output/<config_name>/` as `re
 Each `results.yaml` begins with a comment block listing the units of every result in the file. YAML loaders ignore the comments, so the data reads back unchanged.
 
 Spectra are given per energy bin, not per MeV: normalized spectra sum to 1, and absolute spectra sum to the total yield. Divide by the bin widths to get a spectrum per MeV. Energy bin edges are listed in ascending order.
+
+## Gamma Line Shapes
+
+Each reaction leaves the residual nucleus recoiling, so a gamma emitted before the recoil stops is Doppler shifted. ALPHANSO reports both views of the same gammas:
+
+- `gamma_lines` holds rest-frame energies and total intensities. Use it for discrete-line source definitions.
+- `gamma_spectrum` and `gamma_spectrum_absolute` hold the Doppler-broadened spectrum. The absolute spectrum sums to `gamma_yield`, apart from any intensity outside `gamma_energy_bins`; a warning is logged if that exceeds 1%. These spectra are 4$\pi$ averages, so the detector angle does not enter, and they are not folded with a detector response.
+
+Set `gamma_doppler: false` to skip the spectrum. The broadened spectrum adds roughly 0.3–1 MB to a `results.yaml` on the default grid, more for sandwich problems with several layers; a coarser `gamma_energy_bins` reduces this.
+
+**How much a line broadens** depends on the level lifetime compared with the time the recoil takes to slow down, which is about a picosecond in solids:
+
+| Level lifetime | Result | Example |
+|---|---|---|
+| Much shorter than 1 ps | Emitted in flight, fully broadened | C-12 4.44 MeV from Be-9($\alpha$,n), T$_{1/2}$ = 42 fs |
+| About 1 ps | Sharp peak on a broad base; depends on density | Ne-20 1.63 MeV from O-17($\alpha$,n), T$_{1/2}$ = 0.73 ps |
+| Much longer than 1 ps | Emitted at rest, stays sharp | O-16 6.13 MeV from C-13($\alpha$,n), T$_{1/2}$ = 18 ps |
+
+**Density**: the recoil slows according to the atom density of the solid around it. Give the density of the solid itself, not the bulk or tap density of a powder. Recoils travel on the order of a micrometre, so in fine powders some leave their grain, which this model does not treat. If no density is given, 8e22 atoms/cm^3 is assumed and a warning is logged: atom density varies much less between solids than mass density does, from about 5e22 for U and Pu metal to 1.4e23 atoms/cm^3 for BeO, and a factor of two only moves lines with lifetimes near 1 ps.
+
+**Model and limitations**:
+
+- Recoil speeds come from two-body kinematics with isotropic neutron emission in the centre of mass, the same assumption as the neutron spectrum. Multi-particle channels use an estimate from the mean ejectile energies.
+- Level lifetimes come from RIPL-3, and delays add along a cascade. Levels without a tabulated lifetime and explicit TENDL photon lines are treated as emitting immediately, so their broadening is an upper limit. The TENDL photon continuum is binned without broadening.
+- Recoil slowing uses Lindhard-Scharff electronic stopping (*Mat. Fys. Medd. Dan. Vid. Selsk.* **33**, no. 14, 1963) and ZBL universal nuclear stopping (Ziegler, Biersack and Littmark, *The Stopping and Range of Ions in Solids*, 1985), with Bragg additivity.
+- Geant4 ParticleHP, and so SaG4n, does not shift these gammas, so it cannot be used to validate line shapes. As a check, the 4.44 MeV line of an ideal Am-241 and Be mixture has a calculated FWHM of about 110 keV, against 90 $\pm$ 4 keV measured in an Am-Be source (Janout, Pospíšil and Vobecký, *J. Radioanal. Chem.* **56**, 71, 1980). The model is expected to run high here because it ignores the energy alphas lose in the actinide oxide grains before reaching the Be, and any anisotropy of the neutron emission.
 
 ## Custom Data Sources
 

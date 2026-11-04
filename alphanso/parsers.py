@@ -792,6 +792,48 @@ def _parse_ripl3_gamma_cascades(filepath: os.PathLike, target_a: int, level_ener
     return None
 
 
+def get_level_half_lives(
+        z: int, a: int, data_dir: Optional[os.PathLike] = None
+) -> List[Tuple[float, Optional[float]]]:
+    """
+    Read the level half-lives of one nuclide from its RIPL-3 level file.
+
+    Args:
+        z: Atomic number,
+        a: Mass number,
+        data_dir: [Optional: Defaults to the bundled ``levels`` directory] Directory
+            containing the ``z{Z:03d}.dat`` files.
+
+    Returns:
+        List of (level energy in MeV, half-life in s) in file order. The half-life
+        is None for stable levels and levels without a tabulated value. The list
+        is empty when the nuclide is not tabulated.
+    """
+    levels_dir = data_dir if data_dir is not None else os.path.join(_default_data_root(), "levels")
+    path = os.path.join(levels_dir, f"z{z:03d}.dat")
+    if not os.path.exists(path):
+        return []
+    with open(path, 'r') as f:
+        rows = f.readlines()
+
+    i = 0
+    while i < len(rows):
+        # Nuclide header: (a5, 6i5, 2f12.6) symbol, A, Z, Nol, Nog, Nmax, Nc, Sn, Sp
+        header = rows[i]
+        num_levels = int(header[15:20])
+        i += 1
+        levels = []
+        for _ in range(num_levels):
+            # Level: (i3, 1x, f10.6, 1x, f5.1, i3, 1x, e10.3, i3, ...), then one row per gamma
+            row = rows[i]
+            half_life = float(row[24:34]) if row[24:34].strip() else -1.0
+            levels.append((float(row[4:14]), half_life if half_life > 0.0 else None))
+            i += 1 + (int(row[34:37]) if row[34:37].strip() else 0)
+        if int(header[5:10]) == a and int(header[10:15]) == z:
+            return levels
+    return []
+
+
 def get_gamma_cascade_info(
     product_zaid: int,
     data_dir: Optional[os.PathLike] = None,

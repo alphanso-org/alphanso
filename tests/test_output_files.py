@@ -156,6 +156,25 @@ def test_results_yaml_header_documents_units(tmp_path):
     assert yaml.safe_load(text) == results
 
 
+def test_results_yaml_header_documents_gamma_spectrum_units(tmp_path):
+    results = {
+        "gamma_energy_bins": [0.0, 1.0],
+        "gamma_spectrum": [1.0],
+        "gamma_spectrum_absolute": [2.0],
+        "gamma_recoil_density": 1.85,
+        "gamma_recoil_density_assumed": False,
+    }
+
+    text = write_results_yaml(results, tmp_path, calc_type="homogeneous").read_text()
+    header = [line for line in text.splitlines() if line.startswith("#")]
+
+    assert "#   gamma_energy_bins: MeV (bin edges, ascending)" in header
+    assert "#   gamma_spectrum: fraction of gammas in each energy bin (sums to 1), Doppler broadened" in header
+    assert "#   gamma_spectrum_absolute: gammas/s/g per energy bin, Doppler broadened" in header
+    assert "#   gamma_recoil_density: g/cm^3" in header
+    assert yaml.safe_load(text) == results
+
+
 def test_results_yaml_has_no_header_without_calc_type(tmp_path):
     text = write_results_yaml({"an_yield": 1.0}, tmp_path).read_text()
 

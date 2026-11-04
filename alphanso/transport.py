@@ -5,7 +5,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from scipy.interpolate import interp1d
 from scipy.special import erf
-from collections import defaultdict
+from collections import defaultdict, deque
 from .constants import AVOGADRO_NUM, ANEUT_MASS, ALPH_MASS
 from .atomic_data_loader import atomic_data
 from .parsers import (
@@ -19,6 +19,11 @@ from .data_manager import ensure_data, get_data_dir
 from .gamma_production import (
     get_gamma_target_data,
     compute_gamma_production)
+from .gamma_doppler import (
+    ReactionTally,
+    doppler_spectrum,
+    parse_gamma_energy_bins,
+    recoil_medium)
 from .output_files import normalize_results_payload, write_results_yaml
 from .utils import (
     rebin_xs,
@@ -77,6 +82,26 @@ def _gamma_line_pairs(line_items) -> list:
         [float(energy), float(intensity)]
         for energy, intensity in line_items
     ]
+
+
+def _normalized_spectrum(spectrum):
+    """Scale a spectrum to unit sum, leaving an all-zero spectrum unchanged."""
+    total = spectrum.sum()
+    return spectrum / total if total > 0 else spectrum
+
+
+def _gamma_doppler_results(beam_results: dict) -> dict:
+    """Result entries of the Doppler-broadened gamma spectrum, if it was calculated."""
+    if 'gamma_spectrum_absolute' not in beam_results:
+        return {}
+    spectrum = beam_results['gamma_spectrum_absolute']
+    return {
+        'gamma_energy_bins': beam_results['gamma_energy_bins'].tolist(),
+        'gamma_spectrum': _normalized_spectrum(spectrum).tolist(),
+        'gamma_spectrum_absolute': spectrum.tolist(),
+        'gamma_recoil_density': beam_results['gamma_recoil_density'],
+        'gamma_recoil_density_assumed': beam_results['gamma_recoil_density_assumed'],
+    }
 
 
 class Transport(object):
@@ -146,6 +171,10 @@ class Transport(object):
                 - an_xs_data_dir, stopping_power_data_dir: str, optional
                 - calculate_gammas: bool, optional - Enable gamma calculation (default: True)
                 - gamma_data_dir: str, optional - Gamma-production data root
+                - gamma_doppler: bool, optional - Calculate the Doppler-broadened gamma spectrum
+                  (default: True)
+                - gamma_energy_bins: list or ndarray, optional - Gamma spectrum bin edges in MeV
+                - density: float, optional - Target density in g/cm^3 for recoil slowing
 
         Returns:
             dict - Results containing:
@@ -155,6 +184,9 @@ class Transport(object):
                 - neutron_energy_bins: list - Energy bin edges
                 - gamma_yield: float, optional - Gammas per incident alpha (if calculate_gammas=True)
                 - gamma_lines: list, optional - Discrete gamma lines
+                - gamma_spectrum, gamma_spectrum_absolute, gamma_energy_bins, gamma_recoil_density,
+                  gamma_recoil_density_assumed: optional - Doppler-broadened gamma spectrum
+                  (if gamma_doppler=True)
 
         Raises:
             ValueError: If neither 'beam_energy' nor 'beam_intensities' is specified
@@ -191,7 +223,10 @@ class Transport(object):
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir
+            gamma_data_dir=gamma_data_dir,
+            gamma_doppler=config.get('gamma_doppler', True),
+            gamma_energy_bins=config.get('gamma_energy_bins'),
+            density=config.get('density')
         )
 
         p_total = beam_results['neutron_yield']
@@ -212,6 +247,7 @@ class Transport(object):
         if calculate_gammas and 'gamma_yield' in beam_results:
             results['gamma_yield'] = float(beam_results['gamma_yield'])
             results['gamma_lines'] = beam_results['gamma_lines']
+            results.update(_gamma_doppler_results(beam_results))
 
         return results
 
@@ -226,6 +262,7 @@ class Transport(object):
                 - num_alpha_groups, min_alpha_energy, max_alpha_energy: optional - Alpha energy grid params
                 - neutron_energy_bins: ndarray, optional - Neutron energy grid
                 - an_xs_data_dir, stopping_power_data_dir, decay_data_dir: str, optional
+                - gamma_doppler, gamma_energy_bins, density: optional - See _calculate_beam
 
         Returns:
             dict - Results containing:
@@ -260,7 +297,10 @@ class Transport(object):
             stopping_power_data_dir=stopping_power_data_dir,
             decay_data_dir=decay_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir
+            gamma_data_dir=gamma_data_dir,
+            gamma_doppler=config.get('gamma_doppler', True),
+            gamma_energy_bins=config.get('gamma_energy_bins'),
+            density=config.get('density')
         )
 
         return result
@@ -279,7 +319,8 @@ class Transport(object):
             ep_branching,
             gamma_target=None,
             continuum_xs=None,
-            continuum_dist=None):
+            continuum_dist=None,
+            gamma_tally=None):
         """
         Calculate neutron yield and energy spectrum from alpha slowing down in target.
 
@@ -303,6 +344,8 @@ class Transport(object):
             continuum_dist: dict, optional - MT=91 neutron energy distribution
                 {incident_energy_MeV: [(E_out_MeV, prob_1/MeV), ...]}. If None and
                 continuum_xs is not None, falls back to a kinematic box over [0, enmax_91].
+            gamma_tally: ReactionTally, optional - Records the reactions behind the
+                gamma lines (see gamma_doppler module).
 
         Returns:
             tuple - (an_yield: float, spectrum: ndarray, gamma_yield: float, gamma_lines: list)
@@ -331,7 +374,7 @@ class Transport(object):
         gamma_lines = []
         if gamma_target is not None:
             gamma_yield, line_dict = compute_gamma_production(
-                e_alpha_steps, de, sp_grid, gamma_target)
+                e_alpha_steps, de, sp_grid, gamma_target, tally=gamma_tally)
             gamma_lines = _gamma_line_pairs(sorted(line_dict.items()))
 
         if an_xs is None:
@@ -476,7 +519,10 @@ class Transport(object):
             an_xs_data_dir=None,
             stopping_power_data_dir=None,
             calculate_gammas=True,
-            gamma_data_dir=None):
+            gamma_data_dir=None,
+            gamma_doppler=True,
+            gamma_energy_bins=None,
+            density=None):
         """
         Calculate neutron production from alpha beam incident on thick target.
 
@@ -495,6 +541,13 @@ class Transport(object):
                 containing ``Alpha/Inelastic`` channel files and ``Gammas`` level
                 schemes); defaults to the ``gamma`` subdirectory of the resolved
                 nuclear-data root.
+            gamma_doppler: bool, optional - Calculate the Doppler-broadened gamma
+                spectrum (default: True); requires calculate_gammas
+            gamma_energy_bins: list or ndarray, optional - Gamma spectrum bin edges in
+                MeV, with the input rules of neutron_energy_bins (default: 1 keV bins
+                over 0-15 MeV)
+            density: float, optional - Density of the solid target in g/cm^3 for recoil
+                slowing (default: assume 8e22 atoms/cm^3)
 
         Returns:
             dict - Results dictionary containing:
@@ -503,6 +556,10 @@ class Transport(object):
                 - neutron_energy_bins: ndarray - Energy bins for neutrons
                 - gamma_yield: float - Gamma yield per incident alpha (if calculate_gammas=True)
                 - gamma_lines: list - [[energy_MeV, intensity], ...] discrete gamma lines
+                - gamma_spectrum_absolute: ndarray - Gamma intensity per energy bin (if gamma_doppler=True)
+                - gamma_energy_bins: ndarray - Ascending gamma bin edges (if gamma_doppler=True)
+                - gamma_recoil_density: float - Density used for recoil slowing (if gamma_doppler=True)
+                - gamma_recoil_density_assumed: bool - Whether that density was assumed (if gamma_doppler=True)
         """
 
         if num_alpha_groups is None:
@@ -531,9 +588,14 @@ class Transport(object):
         total_spectrum = np.zeros(len(neutron_energy_bins) - 1)
         p_total = 0
 
+        recoil_tally = None
         if calculate_gammas:
             total_gamma_yield = 0.0
             total_gamma_lines = defaultdict(float)
+            if gamma_doppler:
+                gamma_bin_edges = parse_gamma_energy_bins(gamma_energy_bins)
+                medium, recoil_density, density_assumed = recoil_medium(atom_fractions, density)
+                recoil_tally = ReactionTally()
 
         def _gamma_only_entry(zaid, afrac, gamma_target):
             """Target entry for a nuclide with gamma data but no usable
@@ -636,6 +698,9 @@ class Transport(object):
                 return None
 
             scale = t_data['afrac'] * intensity
+            gamma_tally = None
+            if recoil_tally is not None and gamma_target is not None:
+                gamma_tally = ReactionTally(gamma_target, scale)
             p, spectrum, gamma_y, gamma_lines = Transport._integrate_over_ebins(
                 e,
                 neutron_energy_bins,
@@ -650,6 +715,7 @@ class Transport(object):
                 gamma_target=gamma_target,
                 continuum_xs=t_data.get('continuum_xs'),
                 continuum_dist=t_data.get('continuum_dist'),
+                gamma_tally=gamma_tally,
             )
             return {
                 'p': p * scale,
@@ -658,9 +724,10 @@ class Transport(object):
                 'gamma_lines': _gamma_line_pairs(
                     (eg, ig * scale) for eg, ig in gamma_lines
                 ),
+                'gamma_tally': gamma_tally,
             }
 
-        futures = []
+        futures = deque()
         with ThreadPoolExecutor() as pool:
             for e_i_pair in energies:
                 e = e_i_pair[0]
@@ -670,16 +737,19 @@ class Transport(object):
                 for t_data in target_data_list:
                     futures.append(pool.submit(_worker, e, intensity, t_data))
 
-        for future in futures:
-            result = future.result()
-            if result is None:
-                continue
-            p_total += result['p']
-            total_spectrum += result['spectrum']
-            if calculate_gammas:
-                total_gamma_yield += result['gamma_y']
-                for eg, ig in result['gamma_lines']:
-                    total_gamma_lines[eg] += ig
+            # Results are released as they are merged, in submission order.
+            while futures:
+                result = futures.popleft().result()
+                if result is None:
+                    continue
+                p_total += result['p']
+                total_spectrum += result['spectrum']
+                if calculate_gammas:
+                    total_gamma_yield += result['gamma_y']
+                    for eg, ig in result['gamma_lines']:
+                        total_gamma_lines[eg] += ig
+                    if result['gamma_tally'] is not None:
+                        recoil_tally.merge(result['gamma_tally'])
 
         if np.sum(total_spectrum) > 0:
             normalized_spectrum = total_spectrum / np.sum(total_spectrum)
@@ -695,6 +765,12 @@ class Transport(object):
         if calculate_gammas:
             results['gamma_yield'] = total_gamma_yield
             results['gamma_lines'] = _gamma_line_pairs(sorted(total_gamma_lines.items()))
+            if recoil_tally is not None:
+                results['gamma_spectrum_absolute'] = doppler_spectrum(
+                    recoil_tally, total_gamma_lines, gamma_bin_edges, medium)
+                results['gamma_energy_bins'] = gamma_bin_edges
+                results['gamma_recoil_density'] = recoil_density
+                results['gamma_recoil_density_assumed'] = density_assumed
 
         return results
 
@@ -710,7 +786,10 @@ class Transport(object):
             stopping_power_data_dir=None,
             decay_data_dir=None,
             calculate_gammas=True,
-            gamma_data_dir=None):
+            gamma_data_dir=None,
+            gamma_doppler=True,
+            gamma_energy_bins=None,
+            density=None):
         """
         Calculate neutron production from uniform mixture of alpha emitters in target material.
 
@@ -726,6 +805,7 @@ class Transport(object):
             decay_data_dir: str, optional - Decay spectrum data directory
             calculate_gammas: bool, optional - Enable gamma calculation (default: True)
             gamma_data_dir: str, optional - Gamma-production data root (see beam_problem)
+            gamma_doppler, gamma_energy_bins, density: optional - See beam_problem
 
         Returns:
             dict - Complete results including (alpha,n) and SF contributions:
@@ -775,7 +855,10 @@ class Transport(object):
             neutron_energy_bins=neutron_energy_bins,
             an_xs_data_dir=an_xs_data_dir, stopping_power_data_dir=stopping_power_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir)
+            gamma_data_dir=gamma_data_dir,
+            gamma_doppler=gamma_doppler,
+            gamma_energy_bins=gamma_energy_bins,
+            density=density)
 
         p_total_an = beam_results['neutron_yield']
         spectrum_an = beam_results['neutron_spectrum']
@@ -941,6 +1024,7 @@ class Transport(object):
         if calculate_gammas:
             result['gamma_yield'] = float(gamma_yield_an)
             result['gamma_lines'] = gamma_lines_an
+            result.update(_gamma_doppler_results(beam_results))
 
         if sf_contributors:
             result['sf_contributors'] = sf_contributors
@@ -1392,7 +1476,10 @@ class Transport(object):
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir
+            gamma_data_dir=gamma_data_dir,
+            gamma_doppler=config.get('gamma_doppler', True),
+            gamma_energy_bins=config.get('gamma_energy_bins'),
+            density=config.get('target_density')
         )
 
         p_total = beam_results['neutron_yield']
@@ -1413,6 +1500,7 @@ class Transport(object):
         if calculate_gammas and 'gamma_yield' in beam_results:
             results['gamma_yield'] = float(beam_results['gamma_yield'])
             results['gamma_lines'] = beam_results['gamma_lines']
+            results.update(_gamma_doppler_results(beam_results))
 
         return results
 
@@ -1748,6 +1836,10 @@ class Transport(object):
                 - an_spectrum_absolute: list - Absolute spectrum
                 - neutron_energy_bins: list
                 - spectrum_layers: list - Per-layer spectra
+                - gamma_spectrum, gamma_spectrum_absolute, gamma_spectrum_target, gamma_spectrum_layers,
+                  gamma_energy_bins, gamma_recoil_density_target, gamma_recoil_density_layers,
+                  gamma_recoil_density_assumed: optional - Doppler-broadened gamma spectrum
+                  (if gamma_doppler=True; target_density sets the target density for recoil slowing)
         """
         an_xs_data_dir = config.get('an_xs_data_dir')
         stopping_power_data_dir = config.get('stopping_power_data_dir')
@@ -1757,6 +1849,10 @@ class Transport(object):
 
         calculate_gammas = config.get('calculate_gammas', True)
         gamma_data_dir = config.get('gamma_data_dir')
+        gamma_options = {
+            'gamma_doppler': config.get('gamma_doppler', True),
+            'gamma_energy_bins': config.get('gamma_energy_bins'),
+        }
 
         num_alpha_groups = config.get('num_alpha_groups', 15000)
         min_alpha_energy = config.get('min_alpha_energy', 1e-11)
@@ -1803,7 +1899,9 @@ class Transport(object):
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir
+            gamma_data_dir=gamma_data_dir,
+            density=first_layer['density'],
+            **gamma_options
         )
         yield_ab_b = results_ab_b['neutron_yield']
         spectrum_ab_b = results_ab_b['neutron_spectrum']
@@ -1820,12 +1918,16 @@ class Transport(object):
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir
+            gamma_data_dir=gamma_data_dir,
+            density=last_layer['density'],
+            **gamma_options
         )
         yield_bc_b = results_bc_b['neutron_yield']
         spectrum_bc_b = results_bc_b['neutron_spectrum']
         gamma_yield_bc_b = results_bc_b.get('gamma_yield', 0.0)
         gamma_lines_bc_b = results_bc_b.get('gamma_lines', [])
+        gamma_spectrum_ab_b = results_ab_b.get('gamma_spectrum_absolute')
+        gamma_spectrum_bc_b = results_bc_b.get('gamma_spectrum_absolute')
 
         results_bc_c = Transport.beam_problem(
             bc_alpha_list, target_matdef,
@@ -1836,7 +1938,9 @@ class Transport(object):
             an_xs_data_dir=an_xs_data_dir,
             stopping_power_data_dir=stopping_power_data_dir,
             calculate_gammas=calculate_gammas,
-            gamma_data_dir=gamma_data_dir
+            gamma_data_dir=gamma_data_dir,
+            density=config.get('target_density'),
+            **gamma_options
         )
         yield_bc_c = results_bc_c['neutron_yield']
         spectrum_bc_c = results_bc_c['neutron_spectrum']
@@ -1847,15 +1951,18 @@ class Transport(object):
         spectrum_per_layer = []
         gamma_yield_per_layer = []
         gamma_lines_per_layer = []
+        gamma_spectrum_per_layer = []
 
         for i in range(len(intermediate_layers)):
             layer_matdef = intermediate_layers[i]['matdef']
+            layer_density = intermediate_layers[i]['density']
 
             if i == 0:
                 yield_entering = yield_ab_b
                 spectrum_entering = spectrum_ab_b
                 gamma_yield_entering = gamma_yield_ab_b
                 gamma_lines_entering = gamma_lines_ab_b
+                gamma_spectrum_entering = gamma_spectrum_ab_b
             else:
                 entering_alpha_dict = Transport._calculate_bc_spectrum_volumetric(
                     source_matdef=source_matdef,
@@ -1878,18 +1985,22 @@ class Transport(object):
                     an_xs_data_dir=an_xs_data_dir,
                     stopping_power_data_dir=stopping_power_data_dir,
                     calculate_gammas=calculate_gammas,
-                    gamma_data_dir=gamma_data_dir
+                    gamma_data_dir=gamma_data_dir,
+                    density=layer_density,
+                    **gamma_options
                 )
                 yield_entering = results_entering['neutron_yield']
                 spectrum_entering = results_entering['neutron_spectrum']
                 gamma_yield_entering = results_entering.get('gamma_yield', 0.0)
                 gamma_lines_entering = results_entering.get('gamma_lines', [])
+                gamma_spectrum_entering = results_entering.get('gamma_spectrum_absolute')
 
             if i == len(intermediate_layers) - 1:
                 yield_exiting = yield_bc_b
                 spectrum_exiting = spectrum_bc_b
                 gamma_yield_exiting = gamma_yield_bc_b
                 gamma_lines_exiting = gamma_lines_bc_b
+                gamma_spectrum_exiting = gamma_spectrum_bc_b
             else:
                 exiting_alpha_dict = Transport._calculate_bc_spectrum_volumetric(
                     source_matdef=source_matdef,
@@ -1912,12 +2023,15 @@ class Transport(object):
                     an_xs_data_dir=an_xs_data_dir,
                     stopping_power_data_dir=stopping_power_data_dir,
                     calculate_gammas=calculate_gammas,
-                    gamma_data_dir=gamma_data_dir
+                    gamma_data_dir=gamma_data_dir,
+                    density=layer_density,
+                    **gamma_options
                 )
                 yield_exiting = results_exiting['neutron_yield']
                 spectrum_exiting = results_exiting['neutron_spectrum']
                 gamma_yield_exiting = results_exiting.get('gamma_yield', 0.0)
                 gamma_lines_exiting = results_exiting.get('gamma_lines', [])
+                gamma_spectrum_exiting = results_exiting.get('gamma_spectrum_absolute')
 
             net_yield_in_layer = yield_entering - yield_exiting
             yield_per_layer.append(net_yield_in_layer)
@@ -1942,6 +2056,9 @@ class Transport(object):
                 if net > 1e-20:
                     net_lines_dict[e] = net
             gamma_lines_per_layer.append(_gamma_line_pairs(sorted(net_lines_dict.items())))
+            if gamma_spectrum_entering is not None:
+                gamma_spectrum_per_layer.append(
+                    np.maximum(gamma_spectrum_entering - gamma_spectrum_exiting, 0.0))
 
         an_yield = yield_bc_c + sum(yield_per_layer)
 
@@ -1995,6 +2112,19 @@ class Transport(object):
                     final_lines_dict[e] += i
 
             results['gamma_lines'] = _gamma_line_pairs(sorted(final_lines_dict.items()))
+
+            if 'gamma_spectrum_absolute' in results_bc_c:
+                gamma_spectrum_target = results_bc_c['gamma_spectrum_absolute']
+                gamma_spectrum_total = gamma_spectrum_target + sum(gamma_spectrum_per_layer)
+                results['gamma_energy_bins'] = results_bc_c['gamma_energy_bins'].tolist()
+                results['gamma_spectrum'] = _normalized_spectrum(gamma_spectrum_total).tolist()
+                results['gamma_spectrum_absolute'] = gamma_spectrum_total.tolist()
+                results['gamma_spectrum_target'] = gamma_spectrum_target.tolist()
+                results['gamma_spectrum_layers'] = [s.tolist() for s in gamma_spectrum_per_layer]
+                results['gamma_recoil_density_target'] = results_bc_c['gamma_recoil_density']
+                results['gamma_recoil_density_layers'] = [
+                    float(layer['density']) for layer in intermediate_layers]
+                results['gamma_recoil_density_assumed'] = results_bc_c['gamma_recoil_density_assumed']
 
         return results
 
