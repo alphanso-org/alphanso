@@ -48,14 +48,18 @@ def matdef_to_zaids(matdef_input):
             z = zaid // 1000
             natural_isos = get_natural_isotopes(z)
             if natural_isos:
-                total_abundance = sum(
-                    get_natural_abundance(iso) or 0 for iso in natural_isos
+                total_mass_weight = sum(
+                    (get_natural_abundance(iso) or 0) * (get_atomic_mass(iso) or 0)
+                    for iso in natural_isos
                 )
-                if total_abundance > 0:
+                if total_mass_weight > 0:
                     for iso_zaid in natural_isos:
                         abundance = get_natural_abundance(iso_zaid)
-                        if abundance and abundance > 0:
-                            mass_fractions[iso_zaid] = value * (abundance / total_abundance)
+                        iso_mass = get_atomic_mass(iso_zaid)
+                        if abundance and abundance > 0 and iso_mass and iso_mass > 0:
+                            mass_fractions[iso_zaid] = (
+                                value * (abundance * iso_mass) / total_mass_weight
+                            )
         else:
             mass_fractions[zaid] = value
 

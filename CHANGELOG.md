@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `results.yaml` files now begin with a comment block listing the units of every result for the calculation type. YAML loaders ignore the comments, so the data reads back unchanged.
+- Doppler-broadened gamma spectrum (`alphanso/gamma_doppler.py`), on by default and available for all four calculation types. New results: `gamma_energy_bins`, `gamma_spectrum`, `gamma_spectrum_absolute` and the density used for recoil slowing, plus `gamma_spectrum_target` and `gamma_spectrum_layers` for sandwich problems. Recoil speeds come from the reaction kinematics, emission times from RIPL-3 level lifetimes through the cascade, and recoil slowing from Lindhard-Scharff and ZBL stopping.
+- New options: `gamma_doppler` (default `true`), `gamma_energy_bins` (default 1 keV bins over 0-15 MeV), `density` for beam and homogeneous problems and `target_density` for interface and sandwich problems. Without a density, 8e22 atoms/cm^3 is assumed and a warning is logged.
+
+### Changed
+
+- Because the gamma spectrum is on by default, results contain the new keys and a default `results.yaml` is larger, by roughly 0.3-1 MB and more for sandwich problems with several layers. Set `gamma_doppler: false` to restore the previous output. `gamma_lines` and `gamma_yield` are unchanged and remain rest-frame values.
+
+### Fixed
+
+- Natural elements given by mass fraction are now split among their isotopes by mass (atom abundance weighted by isotopic mass), previously it was only by atom abundance.
+
+### Documentation
+
+- Corrected the interface `an_spectrum_absolute` unit in the README: absolute spectra are per energy bin (n/s/cm^2 per bin), not per MeV.
+- Documented units for every result key of all four calculation types, including the gamma, delayed neutron, average energy, and `sf_contributors` outputs.
+
 ## [1.1.1] - 2026-09-24
 
 ### Fixed
