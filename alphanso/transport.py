@@ -508,21 +508,16 @@ class Transport(object):
             # no tabulated coefficients fall back to isotropic ([1, 0, ...]), which
             # reproduces the uniform _accumulate_spectrum result exactly.
             valid_i, valid_j = np.where(valid_physics)
-            n_valid = len(valid_i)
-            coeff_list = []
-            max_n = 1
-            for k in range(n_valid):
-                c = _interpolate_legendre_coeffs(
-                    angular_dists.get(level_indices[int(valid_j[k])]),
-                    e_steps_valid[int(valid_i[k])])
-                if c is None:
-                    c = np.array([1.0])
-                coeff_list.append(c)
-                if len(c) > max_n:
-                    max_n = len(c)
-            coeffs_padded = np.zeros((n_valid, max_n))
-            for k, c in enumerate(coeff_list):
-                coeffs_padded[k, :len(c)] = c
+            per_level = {}
+            for j in np.unique(valid_j):
+                rows = valid_j == j
+                per_level[j] = (rows, _interpolate_legendre_coeffs(
+                    angular_dists.get(level_indices[int(j)]),
+                    e_steps_valid[valid_i[rows]]))
+            max_n = max(c.shape[1] for _, c in per_level.values())
+            coeffs_padded = np.zeros((len(valid_i), max_n))
+            for rows, c in per_level.values():
+                coeffs_padded[rows, :c.shape[1]] = c
             spectrum = _accumulate_spectrum_legendre(
                 b_lo, b_hi,
                 valid_i.astype(np.int64), valid_j.astype(np.int64),

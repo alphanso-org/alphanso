@@ -159,3 +159,61 @@ class TestLegendreKernel:
                     - _legendre_antideriv_grid(coeffs[None, :], np.array([[-1.0]]))[0, 0])
 
         assert np.isclose(numerical, analytic, atol=1e-5)
+
+
+class TestLegendreParsingAndInterpolation:
+    """Data selection and coefficient interpolation (no transport run needed)."""
+
+    def test_uses_same_file_as_cross_sections(self, monkeypatch):
+        """Angular data must come from the file _find_gnds_xml picks for the XS."""
+        from alphanso import parsers
+
+        calls = []
+
+        def fake_find(zaid, data_dir):
+            calls.append((zaid, data_dir))
+            return None
+
+        monkeypatch.setattr(parsers, "_find_gnds_xml", fake_find)
+        assert parsers.get_angular_distributions(3006) is None
+        assert calls == [(3006, None)]
+
+    def test_lab_frame_and_non_neutron_data_ignored(self):
+        """Only the neutron's centre-of-mass distribution is used."""
+        import xml.etree.ElementTree as ET
+        from alphanso.parsers import _get_angular_dist_from_reaction
+
+        template = """
+        <reaction ENDF_MT="50"><outputChannel><products>
+          <product pid="{pid}"><distribution>
+            <angularTwoBody productFrame="{frame}"><XYs2d><function1ds>
+              <Legendre outerDomainValue="5e6"><values>1 0.2</values></Legendre>
+            </function1ds></XYs2d></angularTwoBody>
+          </distribution></product>
+        </products></outputChannel></reaction>"""
+
+        def parse(pid, frame):
+            return _get_angular_dist_from_reaction(
+                ET.fromstring(template.format(pid=pid, frame=frame)))
+
+        assert parse("n", "centerOfMass") == {5.0: [1.0, 0.2]}
+        assert parse("n", "lab") is None
+        assert parse("C12", "centerOfMass") is None
+
+    def test_interpolation_vectorized(self):
+        """Linear in energy inside the table, isotropic outside it or with no data."""
+        from alphanso.utils import _interpolate_legendre_coeffs
+
+        ang = {2.0: [1.0, 0.2], 4.0: [1.0, 0.6, 0.1]}
+        got = _interpolate_legendre_coeffs(ang, np.array([1.0, 2.0, 3.0, 4.0, 5.0]))
+        expected = np.array([
+            [1.0, 0.0, 0.0],
+            [1.0, 0.2, 0.0],
+            [1.0, 0.4, 0.05],
+            [1.0, 0.6, 0.1],
+            [1.0, 0.0, 0.0],
+        ])
+        np.testing.assert_allclose(got, expected)
+
+        none = _interpolate_legendre_coeffs(None, np.array([3.0, 4.0]))
+        np.testing.assert_array_equal(none, [[1.0], [1.0]])

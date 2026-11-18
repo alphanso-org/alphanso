@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `results.yaml` files now begin with a comment block listing the units of every result for the calculation type. YAML loaders ignore the comments, so the data reads back unchanged.
 - Doppler-broadened gamma spectrum (`alphanso/gamma_doppler.py`), on by default and available for all four calculation types. New results: `gamma_energy_bins`, `gamma_spectrum`, `gamma_spectrum_absolute` and the density used for recoil slowing, plus `gamma_spectrum_target` and `gamma_spectrum_layers` for sandwich problems. Recoil speeds come from the reaction kinematics, emission times from RIPL-3 level lifetimes through the cascade, and recoil slowing from Lindhard-Scharff and ZBL stopping.
 - New options: `gamma_doppler` (default `true`), `gamma_energy_bins` (default 1 keV bins over 0-15 MeV), `density` for beam and homogeneous problems and `target_density` for interface and sandwich problems. Without a density, 8e22 atoms/cm^3 is assumed and a warning is logged.
+- Optional Legendre angular distributions for discrete-level (alpha,n) neutron emission (`use_legendre_angular`, default `false`). When enabled, each level's emission is weighted by the centre-of-mass Legendre coefficients tabulated in the (alpha,n) data files, which reshapes the spectrum within each level's kinematic band; the total neutron yield is unchanged. Levels without tabulated coefficients stay isotropic.
 
 ### Changed
 

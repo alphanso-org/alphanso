@@ -1829,11 +1829,16 @@ def _get_angular_dist_from_reaction(
     Args:
         reaction: ET.Element - Reaction element from a GNDS XML file
 
+    Only the outgoing neutron's distribution is read, and only when it is given in
+    the centre-of-mass frame, which is what the lab-energy mapping assumes.
+
     Returns:
         {alpha_energy_MeV: [a_0, a_1, ..., a_L]}, or None if no Legendre data is present
     """
-    ang_two_body = reaction.find(".//angularTwoBody")
+    ang_two_body = reaction.find(".//product[@pid='n']//angularTwoBody")
     if ang_two_body is None:
+        return None
+    if ang_two_body.get("productFrame", "centerOfMass") != "centerOfMass":
         return None
     xys2d = ang_two_body.find("XYs2d")
     if xys2d is None:
@@ -1881,10 +1886,6 @@ def get_angular_distributions(
     if zaid >= 1e6:
         raise ValueError(f"ZAID {zaid} is not a valid ZZZAAA formatted ZAID.")
 
-    z = zaid // 1000
-    a = zaid % 1000
-    symbol = atomic_data.get_element_symbol(z)
-
     if data_dir is None and _should_use_sources_for_an_xs(zaid):
         return None
 
@@ -1892,37 +1893,9 @@ def get_angular_distributions(
             data_dir is not None and "sources" in str(data_dir)):
         return None
 
-    if data_dir is None:
-        data_root = _default_data_root()
-        possible_filepaths = [
-            os.path.join(data_root, 'an_xs', "ENDF", _get_endf_filename(zaid)),
-            os.path.join(data_root, 'an_xs', "JENDL", f'{zaid}.xml'),
-            os.path.join(data_root, 'an_xs', "TENDL", f'{zaid}.xml'),
-        ]
-    else:
-        try:
-            data_dir_str = str(data_dir).lower()
-        except (TypeError, AttributeError):
-            data_dir_str = str(data_dir)
-        if "tendl-" in data_dir_str or "tendl" in data_dir_str:
-            possible_filepaths = [
-                os.path.join(data_dir, f"a-{symbol}{a:03d}.tendl.gnds.xml"),
-                os.path.join(data_dir, f"a_{z:03d}-{symbol}-{a:03d}.xml"),
-                os.path.join(data_dir, f"{symbol.upper()}{a:03d}.xml"),
-                os.path.join(data_dir, f"{symbol.capitalize()}{a:03d}.xml"),
-                os.path.join(data_dir, f"{symbol}{a:03d}.xml"),
-                os.path.join(data_dir, f"{zaid}.xml"),
-            ]
-        else:
-            possible_filepaths = [
-                os.path.join(data_dir, f'{zaid}.xml')
-            ]
-
-    found_path = None
-    for cand_path in possible_filepaths:
-        if os.path.exists(cand_path):
-            found_path = cand_path
-            break
+    # Same file lookup as the cross sections and level scheme, so the level
+    # indices below refer to the same evaluation.
+    found_path = _find_gnds_xml(zaid, data_dir)
 
     if not found_path:
         return None

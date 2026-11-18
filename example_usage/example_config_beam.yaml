@@ -19,5 +19,6 @@ matdef:
 beam_energy: 5.0
 neutron_energy_bins: [12.0, 0.0, 101]
 
-# Opt in to anisotropic (Legendre) emission; omit or set false for isotropic.
-use_legendre_angular: true
+# Uncomment to weight discrete-level emission by the tabulated Legendre
+# angular distributions (default: isotropic).
+# use_legendre_angular: true

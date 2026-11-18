@@ -352,41 +352,40 @@ def _accumulate_spectrum_continuum_box(
 
 def _interpolate_legendre_coeffs(
         ang_dist: Optional[Dict[float, List[float]]],
-        e_alpha_mev: float) -> Optional[np.ndarray]:
+        e_alpha_mev) -> np.ndarray:
     """
-    Linearly interpolate Legendre angular distribution coefficients at a given alpha energy.
+    Linearly interpolate Legendre angular distribution coefficients at alpha energies.
 
     Args:
         ang_dist: dict, optional - {alpha_energy_MeV: [a_0, a_1, ..., a_L]}
-        e_alpha_mev: float - Alpha particle energy in MeV
+        e_alpha_mev: float or ndarray - Alpha particle energies in MeV, shape (n,)
 
     Returns:
-        ndarray, optional - Interpolated Legendre coefficients, or None if outside
-        the tabulated energy range or if ang_dist is None
+        ndarray - Interpolated coefficients, shape (n, L+1), zero-padded to the longest
+        tabulated expansion. Energies outside the tabulated range, or all energies when
+        ang_dist is None or empty, get the isotropic row [1, 0, ...].
     """
-    if ang_dist is None:
-        return None
+    e = np.atleast_1d(np.asarray(e_alpha_mev, dtype=float))
+    if not ang_dist:
+        coeffs = np.zeros((len(e), 1))
+        coeffs[:, 0] = 1.0
+        return coeffs
 
-    energies = sorted(ang_dist.keys())
-    if not energies or e_alpha_mev < energies[0] or e_alpha_mev > energies[-1]:
-        return None
+    energies = np.array(sorted(ang_dist.keys()))
+    max_len = max(len(c) for c in ang_dist.values())
+    table = np.zeros((len(energies), max_len))
+    for row, e_key in enumerate(energies):
+        c = ang_dist[e_key]
+        table[row, :len(c)] = c
 
-    idx = int(np.searchsorted(energies, e_alpha_mev, side='right')) - 1
-    idx = min(idx, len(energies) - 2)
+    coeffs = np.empty((len(e), max_len))
+    for l in range(max_len):
+        coeffs[:, l] = np.interp(e, energies, table[:, l])
 
-    e_lo = energies[idx]
-    e_hi = energies[idx + 1]
-    c_lo = ang_dist[e_lo]
-    c_hi = ang_dist[e_hi]
-
-    max_len = max(len(c_lo), len(c_hi))
-    arr_lo = np.zeros(max_len)
-    arr_hi = np.zeros(max_len)
-    arr_lo[:len(c_lo)] = c_lo
-    arr_hi[:len(c_hi)] = c_hi
-
-    t = (e_alpha_mev - e_lo) / (e_hi - e_lo) if e_hi > e_lo else 0.0
-    return arr_lo + t * (arr_hi - arr_lo)
+    outside = (e < energies[0]) | (e > energies[-1])
+    coeffs[outside] = 0.0
+    coeffs[outside, 0] = 1.0
+    return coeffs
 
 
 def _legendre_antideriv_grid(coeffs, mu):
