@@ -1821,6 +1821,104 @@ def _get_stopping_power_srim(
     return dict(zip(energy_list, stopping_power_list))
 
 
+def _get_angular_dist_from_reaction(
+        reaction: ET.Element) -> Optional[Dict[float, List[float]]]:
+    """
+    Extract Legendre angular distribution coefficients from a reaction element.
+
+    Args:
+        reaction: ET.Element - Reaction element from a GNDS XML file
+
+    Only the outgoing neutron's distribution is read, and only when it is given in
+    the centre-of-mass frame, which is what the lab-energy mapping assumes.
+
+    Returns:
+        {alpha_energy_MeV: [a_0, a_1, ..., a_L]}, or None if no Legendre data is present
+    """
+    ang_two_body = reaction.find(".//product[@pid='n']//angularTwoBody")
+    if ang_two_body is None:
+        return None
+    if ang_two_body.get("productFrame", "centerOfMass") != "centerOfMass":
+        return None
+    xys2d = ang_two_body.find("XYs2d")
+    if xys2d is None:
+        return None
+    func1ds = xys2d.find("function1ds")
+    if func1ds is None:
+        return None
+
+    result = {}
+    for leg_elem in func1ds.findall("Legendre"):
+        e_ev_str = leg_elem.get("outerDomainValue")
+        if e_ev_str is None:
+            continue
+        values_elem = leg_elem.find("values")
+        if values_elem is None or not values_elem.text:
+            continue
+        coeffs = [float(x) for x in values_elem.text.split()]
+        result[float(e_ev_str) / 1e6] = coeffs
+
+    return result if result else None
+
+
+def get_angular_distributions(
+        zaid: int,
+        data_dir: Optional[os.PathLike] = None) -> Optional[Dict[int, Dict[float, List[float]]]]:
+    """
+    Get Legendre angular distribution coefficients for (alpha,n) reactions by level.
+
+    Reads per-level Legendre polynomial coefficients from the same GNDS XML files
+    used for cross sections. Returns None when SOURCES data is in use or no Legendre
+    entries are found, which causes the caller to fall back to isotropic emission.
+
+    Args:
+        zaid: int - Target nucleus ZAID (ZZZAAA format)
+        data_dir: os.PathLike, optional - Directory containing nuclear data files.
+            Defaults to the standard ENDF data directory.
+
+    Returns:
+        {level_idx: {alpha_energy_MeV: [a_0, a_1, ..., a_L]}}, or None if no data found.
+        level_idx 0 corresponds to MT=50 (ground state), 1 to MT=51, and so on.
+
+    Raises:
+        ValueError: If zaid is not a valid ZZZAAA formatted ZAID
+    """
+    if zaid >= 1e6:
+        raise ValueError(f"ZAID {zaid} is not a valid ZZZAAA formatted ZAID.")
+
+    if data_dir is None and _should_use_sources_for_an_xs(zaid):
+        return None
+
+    if data_dir == "sources" or (
+            data_dir is not None and "sources" in str(data_dir)):
+        return None
+
+    # Same file lookup as the cross sections and level scheme, so the level
+    # indices below refer to the same evaluation.
+    found_path = _find_gnds_xml(zaid, data_dir)
+
+    if not found_path:
+        return None
+
+    try:
+        tree = ET.parse(found_path)
+        root = tree.getroot()
+    except ET.ParseError:
+        return None
+
+    ang_dists = {}
+    for level_idx in range(41):
+        mt = 50 + level_idx
+        reaction = root.find(f".//reaction[@ENDF_MT='{mt}']")
+        if reaction is None:
+            continue
+        dist = _get_angular_dist_from_reaction(reaction)
+        if dist is not None:
+            ang_dists[level_idx] = dist
+
+    return ang_dists if ang_dists else None
+
+
 def _get_continuum_dist_from_reaction(
         reaction: ET.Element) -> Optional[Dict[float, List[Tuple[float, float]]]]:
     """
