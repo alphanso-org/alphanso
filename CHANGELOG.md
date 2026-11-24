@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Natural elements given by mass fraction are now split among their isotopes by mass (atom abundance weighted by isotopic mass), previously it was only by atom abundance.
+- MT=91 continuum neutron spectra are transformed from the center-of-mass frame to the lab frame. Kalbach-Mann distributions use their tabulated precompound fraction `r` and the Kalbach systematics for the slope and uncorrelated distributions are emitted isotropically.
+- MT=91 distributions marked `unitbase` are interpolated between incident energies on a unit base so that the outgoing energy range grows smoothly with alpha energy.
+- MT=91 distributions stored as `uncorrelated` (F-19, Na-23 in JENDL) are now read.
+- The kinematic box fallback for continua without a tabulated distribution (Li-7, B-10 and JENDL O-18) now uses the Q-value at the start of the continuum (ENDF QI) instead of the ground-state Q-value that GNDS stores in `<Q>` for MT=91, which put neutrons above the kinematic limit.
 
 ### Documentation
 

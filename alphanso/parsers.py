@@ -1919,39 +1919,54 @@ def get_angular_distributions(
     return ang_dists if ang_dists else None
 
 
-def _get_continuum_dist_from_reaction(
-        reaction: ET.Element) -> Optional[Dict[float, List[Tuple[float, float]]]]:
+class ContinuumChannel:
     """
-    Extract the neutron energy distribution from an MT=91 continuum reaction element.
+    The MT=91 continuum (alpha,n) channel of one target nuclide.
 
-    Handles KalbachMann (<KalbachMann><f><XYs2d>) and direct <XYs2d> formats.
-    Returns None when the distribution element is <unspecified>.
+    Attributes:
+        zaid: int - Target ZAID (ZZZAAA)
+        xs: dict - Cross section {alpha_energy_MeV: barns}
+        q_value: float - Q-value at the start of the continuum (MeV). This is the
+            ENDF QI, not the ground-state Q that GNDS stores in <Q> for MT=91.
+        f: dict or None - Outgoing neutron energy distribution
+            {alpha_energy_MeV: [(E_out_MeV, prob_1/MeV), ...]}, or None when the
+            evaluation leaves it unspecified
+        r: dict or None - Kalbach-Mann precompound fraction on the same layout as
+            f ({alpha_energy_MeV: [(E_out_MeV, r), ...]}), or None for isotropic
+            emission
+        frame: str - Frame of E_out in f, 'centerOfMass' or 'lab'
+        unit_base: bool - Whether f and r are interpolated between incident
+            energies on a unit base, as GNDS interpolationQualifier="unitbase"
+            requires
+    """
+
+    def __init__(self, zaid: int, xs: Dict[float, float], q_value: float,
+                 f: Optional[Dict[float, List[Tuple[float, float]]]] = None,
+                 r: Optional[Dict[float, List[Tuple[float, float]]]] = None,
+                 frame: str = 'lab', unit_base: bool = False):
+        self.zaid = zaid
+        self.xs = xs
+        self.q_value = q_value
+        self.f = f
+        self.r = r
+        self.frame = frame
+        self.unit_base = unit_base
+
+
+def _read_xys2d_tables(
+        xys2d: ET.Element, y_scale: float) -> Optional[Dict[float, List[Tuple[float, float]]]]:
+    """
+    Read the XYs1d tables of an <XYs2d> keyed by incident energy.
 
     Args:
-        reaction: ET.Element - MT=91 reaction element from a GNDS XML file
+        xys2d: ET.Element - <XYs2d> with energy_in (eV) as the outer axis and
+            energy_out (eV) as the inner axis
+        y_scale: float - Factor applied to the tabulated values (1e6 converts 1/eV
+            to 1/MeV, 1.0 leaves a dimensionless quantity unchanged)
 
     Returns:
-        {incident_energy_MeV: [(E_out_MeV, prob_1/MeV), ...]}, or None if no tabulated data
+        {incident_energy_MeV: [(E_out_MeV, y), ...]}, or None if nothing is tabulated
     """
-    product = reaction.find(".//product[@pid='n']")
-    if product is None:
-        return None
-    distribution = product.find("distribution")
-    if distribution is None:
-        return None
-
-    xys2d = None
-    kalbach = distribution.find("KalbachMann")
-    if kalbach is not None:
-        f_elem = kalbach.find("f")
-        if f_elem is not None:
-            xys2d = f_elem.find("XYs2d")
-    else:
-        xys2d = distribution.find("XYs2d")
-
-    if xys2d is None:
-        return None
-
     func1ds = xys2d.find("function1ds")
     if func1ds is None:
         return None
@@ -1967,25 +1982,115 @@ def _get_continuum_dist_from_reaction(
         raw = [float(x) for x in values_elem.text.split()]
         if len(raw) < 2 or len(raw) % 2 != 0:
             continue
-        e_out_arr = raw[::2]
-        prob_arr = raw[1::2]
-        pairs = [(e_out_arr[k] / 1e6, prob_arr[k] * 1e6) for k in range(len(e_out_arr))]
+        pairs = [(raw[k] / 1e6, raw[k + 1] * y_scale) for k in range(0, len(raw), 2)]
         result[float(e_ev_str) / 1e6] = pairs
 
     return result if result else None
 
 
+def _get_continuum_dist_from_reaction(reaction: ET.Element) -> dict:
+    """
+    Extract the neutron distribution from an MT=91 continuum reaction element.
+
+    Handles <KalbachMann> (f and r) and <uncorrelated> distributions with an
+    isotropic angular part. Anything else gives f=None.
+
+    Args:
+        reaction: ET.Element - MT=91 reaction element from a GNDS XML file
+
+    Returns:
+        dict with keys 'f', 'r', 'frame' and 'unit_base', as ContinuumChannel
+        defines them
+    """
+    none = {'f': None, 'r': None, 'frame': 'lab', 'unit_base': False}
+
+    product = reaction.find(".//product[@pid='n']")
+    if product is None:
+        return none
+    distribution = product.find("distribution")
+    if distribution is None or len(distribution) == 0:
+        return none
+
+    form = distribution[0]
+    frame = form.get("productFrame", "lab")
+
+    if form.tag == "KalbachMann":
+        f_xys2d = form.find("f/XYs2d")
+        r_xys2d = form.find("r/XYs2d")
+        if f_xys2d is None:
+            return none
+        if form.find("a") is not None:
+            logger.warning(
+                "MT=91 Kalbach-Mann <a> table is not supported; using the Kalbach "
+                "systematics for the slope instead.")
+        f = _read_xys2d_tables(f_xys2d, 1e6)
+        r = _read_xys2d_tables(r_xys2d, 1.0) if r_xys2d is not None else None
+    elif form.tag == "uncorrelated":
+        f_xys2d = form.find("energy/XYs2d")
+        if f_xys2d is None:
+            return none
+        if form.find("angular/isotropic2d") is None:
+            logger.warning(
+                "MT=91 uncorrelated angular distribution is not isotropic; "
+                "treating it as isotropic.")
+        f = _read_xys2d_tables(f_xys2d, 1e6)
+        r = None
+    else:
+        return none
+
+    if f is None:
+        return none
+
+    return {
+        'f': f,
+        'r': r,
+        'frame': frame,
+        'unit_base': f_xys2d.get("interpolationQualifier", "").startswith("unitbase"),
+    }
+
+
+def _get_continuum_q_value(root: ET.Element, reaction: ET.Element) -> Optional[float]:
+    """
+    Q-value (MeV) at the start of the MT=91 continuum.
+
+    For MT=91 the <Q> element holds the ground-state Q (ENDF QM). When QI differs,
+    the GNDS converter keeps it in an ENDFconversionFlags entry pointing at that
+    reaction's Q, so the flag is used when present and <Q> otherwise.
+
+    Args:
+        root: ET.Element - reactionSuite root
+        reaction: ET.Element - MT=91 reaction element
+
+    Returns:
+        Q-value in MeV, or None if neither is available
+    """
+    label = reaction.get("label")
+    if label is not None:
+        target = f"reaction[@label='{label}']/outputChannel/Q"
+        for conv in root.iterfind(".//ENDFconversionFlags/conversion"):
+            if not conv.get("href", "").endswith(target):
+                continue
+            for flag in conv.get("flags", "").split(","):
+                flag = flag.strip()
+                if flag.startswith("QI="):
+                    return float(flag[3:]) / 1e6
+
+    q_elem = reaction.find("outputChannel/Q/constant1d")
+    if q_elem is not None and q_elem.get("value") is not None:
+        return float(q_elem.get("value")) / 1e6
+    return None
+
+
 def get_continuum_info(
         zaid: int,
-        data_dir: Optional[os.PathLike] = None
-) -> Tuple[Optional[Dict[float, float]], Optional[Dict[float, List[Tuple[float, float]]]]]:
+        data_dir: Optional[os.PathLike] = None) -> Optional[ContinuumChannel]:
     """
-    Get cross section and energy distribution for the MT=91 continuum (alpha,n) reaction.
+    Get the MT=91 continuum (alpha,n) channel: cross section, Q-value and distribution.
 
     Reads the MT=91 continuum reaction from the same GNDS XML files used for cross
-    sections. Returns (None, None) when SOURCES data is in use or no MT=91 reaction
-    is present. Returns (continuum_xs, None) when cross section data exists but the
-    neutron energy distribution element is <unspecified>.
+    sections. Returns None when SOURCES data is in use or no MT=91 reaction is
+    present. The returned channel has f=None when the neutron distribution is
+    <unspecified>.
 
     Args:
         zaid: int - Target nucleus ZAID (ZZZAAA format)
@@ -1993,10 +2098,7 @@ def get_continuum_info(
             Defaults to the standard ENDF data directory.
 
     Returns:
-        Tuple of (continuum_xs, continuum_dist) where continuum_xs is
-        {energy_MeV: cross_section_barns} and continuum_dist is
-        {incident_energy_MeV: [(E_out_MeV, prob_1/MeV), ...]}.
-        Returns (None, None) if no MT=91 data is found.
+        ContinuumChannel, or None if no MT=91 data is found
 
     Raises:
         ValueError: If zaid is not a valid ZZZAAA formatted ZAID
@@ -2005,33 +2107,38 @@ def get_continuum_info(
         raise ValueError(f"ZAID {zaid} is not a valid ZZZAAA formatted ZAID.")
 
     if data_dir is None and _should_use_sources_for_an_xs(zaid):
-        return None, None
+        return None
 
     if data_dir == "sources" or (
             data_dir is not None and "sources" in str(data_dir)):
-        return None, None
+        return None
 
     found_path = _find_gnds_xml(zaid, data_dir)
 
     if not found_path:
-        return None, None
+        return None
 
     try:
         tree = ET.parse(found_path)
         root = tree.getroot()
     except ET.ParseError:
-        return None, None
+        return None
 
     reaction = root.find(".//reaction[@ENDF_MT='91']")
     if reaction is None:
-        return None, None
+        return None
 
     continuum_xs = _get_cross_section_from_reaction(reaction)
     if continuum_xs is None:
-        return None, None
+        return None
 
-    continuum_dist = _get_continuum_dist_from_reaction(reaction)
-    return continuum_xs, continuum_dist
+    q_value = _get_continuum_q_value(root, reaction)
+    if q_value is None:
+        logger.warning(f"No Q-value for the MT=91 continuum of ZAID {zaid}; skipping it.")
+        return None
+
+    return ContinuumChannel(zaid, continuum_xs, q_value,
+                            **_get_continuum_dist_from_reaction(reaction))
 
 
 def _calculate_branching_fractions(
