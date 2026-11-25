@@ -1921,13 +1921,18 @@ def get_angular_distributions(
 
 class ContinuumChannel:
     """
-    The MT=91 continuum (alpha,n) channel of one target nuclide.
+    A non-discrete neutron-emitting (alpha,n) channel of one target nuclide.
+
+    Covers the MT=91 continuum and multi-particle channels such as (alpha,2n)
+    MT=16, (alpha,n alpha) MT=22 and (alpha,np) MT=28, whose neutrons are not
+    emitted to a discrete level of the residual.
 
     Attributes:
         zaid: int - Target ZAID (ZZZAAA)
-        xs: dict - Cross section {alpha_energy_MeV: barns}
-        q_value: float - Q-value at the start of the continuum (MeV). This is the
-            ENDF QI, not the ground-state Q that GNDS stores in <Q> for MT=91.
+        xs: dict - Neutron production cross section {alpha_energy_MeV: barns},
+            i.e. the reaction cross section times the neutron multiplicity
+        q_value: float - Q-value at the start of the channel (MeV). For MT=91 this
+            is the ENDF QI, not the ground-state Q that GNDS stores in <Q>.
         f: dict or None - Outgoing neutron energy distribution
             {alpha_energy_MeV: [(E_out_MeV, prob_1/MeV), ...]}, or None when the
             evaluation leaves it unspecified
@@ -1938,12 +1943,14 @@ class ContinuumChannel:
         unit_base: bool - Whether f and r are interpolated between incident
             energies on a unit base, as GNDS interpolationQualifier="unitbase"
             requires
+        mt: int - ENDF MT number of the reaction
     """
 
     def __init__(self, zaid: int, xs: Dict[float, float], q_value: float,
                  f: Optional[Dict[float, List[Tuple[float, float]]]] = None,
                  r: Optional[Dict[float, List[Tuple[float, float]]]] = None,
-                 frame: str = 'lab', unit_base: bool = False):
+                 frame: str = 'lab', unit_base: bool = False, mt: int = 91):
+        self.mt = mt
         self.zaid = zaid
         self.xs = xs
         self.q_value = q_value
@@ -1990,13 +1997,13 @@ def _read_xys2d_tables(
 
 def _get_continuum_dist_from_reaction(reaction: ET.Element) -> dict:
     """
-    Extract the neutron distribution from an MT=91 continuum reaction element.
+    Extract the neutron distribution from a continuum reaction element.
 
     Handles <KalbachMann> (f and r) and <uncorrelated> distributions with an
     isotropic angular part. Anything else gives f=None.
 
     Args:
-        reaction: ET.Element - MT=91 reaction element from a GNDS XML file
+        reaction: ET.Element - Reaction element from a GNDS XML file
 
     Returns:
         dict with keys 'f', 'r', 'frame' and 'unit_base', as ContinuumChannel
@@ -2021,7 +2028,7 @@ def _get_continuum_dist_from_reaction(reaction: ET.Element) -> dict:
             return none
         if form.find("a") is not None:
             logger.warning(
-                "MT=91 Kalbach-Mann <a> table is not supported; using the Kalbach "
+                "Kalbach-Mann <a> table is not supported; using the Kalbach "
                 "systematics for the slope instead.")
         f = _read_xys2d_tables(f_xys2d, 1e6)
         r = _read_xys2d_tables(r_xys2d, 1.0) if r_xys2d is not None else None
@@ -2031,7 +2038,7 @@ def _get_continuum_dist_from_reaction(reaction: ET.Element) -> dict:
             return none
         if form.find("angular/isotropic2d") is None:
             logger.warning(
-                "MT=91 uncorrelated angular distribution is not isotropic; "
+                "Uncorrelated angular distribution is not isotropic; "
                 "treating it as isotropic.")
         f = _read_xys2d_tables(f_xys2d, 1e6)
         r = None
@@ -2051,15 +2058,16 @@ def _get_continuum_dist_from_reaction(reaction: ET.Element) -> dict:
 
 def _get_continuum_q_value(root: ET.Element, reaction: ET.Element) -> Optional[float]:
     """
-    Q-value (MeV) at the start of the MT=91 continuum.
+    Q-value (MeV) at the start of a reaction channel.
 
-    For MT=91 the <Q> element holds the ground-state Q (ENDF QM). When QI differs,
-    the GNDS converter keeps it in an ENDFconversionFlags entry pointing at that
-    reaction's Q, so the flag is used when present and <Q> otherwise.
+    The <Q> element holds the ENDF QM, which for MT=91 is the ground-state Q. When
+    QI differs, the GNDS converter keeps it in an ENDFconversionFlags entry
+    pointing at that reaction's Q, so the flag is used when present and <Q>
+    otherwise.
 
     Args:
         root: ET.Element - reactionSuite root
-        reaction: ET.Element - MT=91 reaction element
+        reaction: ET.Element - Reaction element
 
     Returns:
         Q-value in MeV, or None if neither is available
@@ -2081,16 +2089,89 @@ def _get_continuum_q_value(root: ET.Element, reaction: ET.Element) -> Optional[f
     return None
 
 
-def get_continuum_info(
-        zaid: int,
-        data_dir: Optional[os.PathLike] = None) -> Optional[ContinuumChannel]:
-    """
-    Get the MT=91 continuum (alpha,n) channel: cross section, Q-value and distribution.
+_CONTINUUM_MTS = frozenset(
+    [11, 16, 17] + list(range(22, 26)) + [28, 29, 30] + list(range(32, 38))
+    + [41, 42, 44, 45, 91])
 
-    Reads the MT=91 continuum reaction from the same GNDS XML files used for cross
-    sections. Returns None when SOURCES data is in use or no MT=91 reaction is
-    present. The returned channel has f=None when the neutron distribution is
-    <unspecified>.
+
+def _get_neutron_multiplicity(reaction: ET.Element, xs: Dict[float, float]) -> Optional[np.ndarray]:
+    """
+    Neutron multiplicity of a reaction on the energy grid of its cross section.
+
+    Args:
+        reaction: ET.Element - Reaction element
+        xs: dict - Cross section {energy_MeV: barns} giving the energy grid
+
+    Returns:
+        ndarray of multiplicities in the sorted order of xs, or None if the
+        multiplicity is missing or in an unsupported form
+    """
+    mult = reaction.find(".//product[@pid='n']/multiplicity")
+    if mult is None or len(mult) == 0:
+        return None
+    energies = np.array(sorted(xs.keys()))
+    form = mult[0]
+    if form.tag == "constant1d" and form.get("value") is not None:
+        return np.full(len(energies), float(form.get("value")))
+    if form.tag == "XYs1d":
+        values_elem = form.find("values")
+        if values_elem is not None and values_elem.text:
+            raw = np.array(values_elem.text.split(), dtype=float)
+            return np.interp(energies, raw[::2] / 1e6, raw[1::2])
+    return None
+
+
+def _cap_continuum_channels(channels: List[ContinuumChannel], total_xs: Dict[float, float],
+                            discrete_xs: List[Dict[float, float]]) -> None:
+    """
+    Scale continuum channels down where they exceed the total minus the discrete levels.
+
+    The channels and the discrete levels together must not produce more neutrons
+    than the total (MT=201). Where the sum of the channels exceeds the remainder,
+    each channel is scaled by the same factor; elsewhere they are unchanged. This
+    removes cross sections that a coarse tabulation interpolates across a
+    threshold, such as Be-9 MT=22 between 2.4 and 4.64 MeV. Each channel's xs is
+    replaced in place by its values on the union of all energy grids.
+
+    Args:
+        channels: list of ContinuumChannel - Channels of one target
+        total_xs: dict - Total neutron production cross section (MT=201)
+        discrete_xs: list of dict - Cross sections of the discrete levels
+    """
+    grids = [list(total_xs.keys())] + [list(c.xs.keys()) for c in channels]
+    grids += [list(d.keys()) for d in discrete_xs]
+    energies = np.unique(np.concatenate(grids))
+
+    def on_grid(xs):
+        e = np.array(sorted(xs.keys()))
+        return np.interp(energies, e, [xs[k] for k in e], left=0.0, right=0.0)
+
+    room = on_grid(total_xs) - sum((on_grid(d) for d in discrete_xs), np.zeros(len(energies)))
+    room = np.maximum(room, 0.0)
+    values = [on_grid(c.xs) for c in channels]
+    channel_sum = np.sum(values, axis=0)
+    scale = np.ones(len(energies))
+    over = channel_sum > room
+    scale[over] = room[over] / channel_sum[over]
+
+    for channel, v in zip(channels, values):
+        channel.xs = dict(zip(energies.tolist(), (v * scale).tolist()))
+
+
+def get_continuum_channels(
+        zaid: int,
+        data_dir: Optional[os.PathLike] = None) -> List[ContinuumChannel]:
+    """
+    Get the non-discrete neutron-emitting (alpha,n) channels of a target.
+
+    Reads every reaction that emits neutrons other than to a discrete level of
+    the residual (MT=91 and multi-particle channels such as MT=16, 22 and 28) from
+    the same GNDS XML file used for the total cross section. Channels are only
+    built for files that have both discrete levels (MT=50-90) and a total neutron
+    production cross section (MT=201), so that the channels and the levels share
+    the total; files without them (TENDL) are left to their existing treatment.
+    The channels are capped so that together with the levels they do not exceed
+    the total. A channel has f=None when its neutron distribution is unspecified.
 
     Args:
         zaid: int - Target nucleus ZAID (ZZZAAA format)
@@ -2098,7 +2179,7 @@ def get_continuum_info(
             Defaults to the standard ENDF data directory.
 
     Returns:
-        ContinuumChannel, or None if no MT=91 data is found
+        list of ContinuumChannel, empty if there are none
 
     Raises:
         ValueError: If zaid is not a valid ZZZAAA formatted ZAID
@@ -2107,38 +2188,68 @@ def get_continuum_info(
         raise ValueError(f"ZAID {zaid} is not a valid ZZZAAA formatted ZAID.")
 
     if data_dir is None and _should_use_sources_for_an_xs(zaid):
-        return None
+        return []
 
     if data_dir == "sources" or (
             data_dir is not None and "sources" in str(data_dir)):
-        return None
+        return []
 
     found_path = _find_gnds_xml(zaid, data_dir)
 
     if not found_path:
-        return None
+        return []
 
     try:
         tree = ET.parse(found_path)
         root = tree.getroot()
     except ET.ParseError:
-        return None
+        return []
 
-    reaction = root.find(".//reaction[@ENDF_MT='91']")
-    if reaction is None:
-        return None
+    total_xs = None
+    discrete_xs = []
+    candidates = []
+    for reaction in root.iter("reaction"):
+        mt_str = reaction.get("ENDF_MT")
+        if mt_str is None:
+            continue
+        if reaction.find("crossSection") is None:
+            continue
+        mt = int(mt_str)
+        if mt == 201:
+            total_xs = _get_cross_section_from_reaction(reaction)
+        elif 50 <= mt <= 90:
+            xs = _get_cross_section_from_reaction(reaction)
+            if xs:
+                discrete_xs.append(xs)
+        elif mt in _CONTINUUM_MTS and reaction.find(".//product[@pid='n']") is not None:
+            candidates.append((mt, reaction))
 
-    continuum_xs = _get_cross_section_from_reaction(reaction)
-    if continuum_xs is None:
-        return None
+    if not total_xs or not discrete_xs:
+        return []
 
-    q_value = _get_continuum_q_value(root, reaction)
-    if q_value is None:
-        logger.warning(f"No Q-value for the MT=91 continuum of ZAID {zaid}; skipping it.")
-        return None
+    channels = []
+    for mt, reaction in candidates:
+        xs = _get_cross_section_from_reaction(reaction)
+        if not xs:
+            continue
+        multiplicity = _get_neutron_multiplicity(reaction, xs)
+        if multiplicity is None:
+            logger.warning(
+                f"No neutron multiplicity for MT={mt} of ZAID {zaid}; skipping it.")
+            continue
+        q_value = _get_continuum_q_value(root, reaction)
+        if q_value is None:
+            logger.warning(f"No Q-value for MT={mt} of ZAID {zaid}; skipping it.")
+            continue
+        energies = sorted(xs.keys())
+        values = np.array([xs[e] for e in energies]) * multiplicity
+        production = dict(zip(energies, values.tolist()))
+        channels.append(ContinuumChannel(
+            zaid, production, q_value, mt=mt, **_get_continuum_dist_from_reaction(reaction)))
 
-    return ContinuumChannel(zaid, continuum_xs, q_value,
-                            **_get_continuum_dist_from_reaction(reaction))
+    if channels:
+        _cap_continuum_channels(channels, total_xs, discrete_xs)
+    return channels
 
 
 def _calculate_branching_fractions(

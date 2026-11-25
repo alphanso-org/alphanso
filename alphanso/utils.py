@@ -432,7 +432,7 @@ def _preprocess_continuum_dist(channel, e_steps_mev, neutron_bins, target_mass_a
     interpolated between them, since it changes little over one slowing-down step.
 
     Args:
-        channel: ContinuumChannel - MT=91 channel with a tabulated f
+        channel: ContinuumChannel - Continuum channel with a tabulated f
         e_steps_mev: ndarray - Incident alpha energies at each integration step (MeV)
         neutron_bins: ndarray - Neutron output energy bin edges (MeV)
         target_mass_amu: float - Target mass (amu)
@@ -515,17 +515,17 @@ def _accumulate_spectrum_continuum_box(
     """
     Accumulate continuum channel spectrum using a kinematic box fallback.
 
-    Used when no tabulated neutron energy distribution is available for MT=91.
-    Distributes each alpha step's yield uniformly over [0, enmax_91] computed
+    Used when a continuum channel has no tabulated neutron energy distribution.
+    Distributes each alpha step's yield uniformly over [0, enmax] computed
     from the same two-body kinematic formula as discrete levels, with the Q-value
-    at the start of the continuum.
+    at the start of the channel.
 
     Args:
         b_lo: ndarray - Lower edges of neutron energy bins (MeV)
         b_hi: ndarray - Upper edges of neutron energy bins (MeV)
         cont_yield: ndarray - Continuum yield integrand at each alpha step
         e_steps: ndarray - Alpha energies at each step (MeV)
-        q_value: float - Q-value at the start of the continuum, ENDF QI (MeV)
+        q_value: float - Q-value at the start of the channel, ENDF QI (MeV)
         product_mass: float - Product nucleus mass (amu)
         target_mass_amu: float - Target nucleus mass (amu)
         aneut_mass: float - Neutron mass (amu)

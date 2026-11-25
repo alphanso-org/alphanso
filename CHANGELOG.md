@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - MT=91 distributions marked `unitbase` are interpolated between incident energies on a unit base so that the outgoing energy range grows smoothly with alpha energy.
 - MT=91 distributions stored as `uncorrelated` (F-19, Na-23 in JENDL) are now read.
 - The kinematic box fallback for continua without a tabulated distribution (Li-7, B-10 and JENDL O-18) now uses the Q-value at the start of the continuum (ENDF QI) instead of the ground-state Q-value that GNDS stores in `<Q>` for MT=91, which put neutrons above the kinematic limit.
+- Multi-particle (alpha,n) channels get their own neutron spectra (like the MT=91 continuum). Total yields are unchanged. Channels are only read from evaluations with discrete levels and a total neutron production cross section (ENDF and JENDL).
+- Channel cross sections are capped so that with the discrete levels they do not exceed the total neutron production.
 
 ### Documentation
 
