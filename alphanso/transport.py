@@ -12,7 +12,7 @@ from .parsers import (
     get_an_xs,
     get_angular_distributions,
     get_branching_info,
-    get_continuum_info,
+    get_continuum_channels,
     get_decay_spectrum,
     get_stopping_power,
     load_delayed_neutron_data)
@@ -325,8 +325,7 @@ class Transport(object):
             target_mass_amu,
             ep_branching,
             gamma_target=None,
-            continuum_xs=None,
-            continuum_dist=None,
+            continua=None,
             gamma_tally=None,
             angular_dists=None,
             level_indices=None):
@@ -348,11 +347,11 @@ class Transport(object):
             gamma_target: GammaTargetData, optional - Gamma-production channel data
                 for this target nuclide (see gamma_production module); gamma
                 output is zero when None.
-            continuum_xs: dict, optional - MT=91 continuum cross sections
-                {energy_MeV: cross_section_barns}. If None, no continuum channel is added.
-            continuum_dist: dict, optional - MT=91 neutron energy distribution
-                {incident_energy_MeV: [(E_out_MeV, prob_1/MeV), ...]}. If None and
-                continuum_xs is not None, falls back to a kinematic box over [0, enmax_91].
+            continua: list of ContinuumChannel, optional - Non-discrete neutron
+                channels (MT=91, 16, 22, 28, ...). Each takes its share of the total
+                cross section from the discrete levels and adds its own spectrum. A
+                channel without a tabulated distribution falls back to a kinematic
+                box over [0, enmax] for its Q-value.
             gamma_tally: ReactionTally, optional - Records the reactions behind the
                 gamma lines (see gamma_doppler module).
             angular_dists: dict, optional - Per-level Legendre angular distribution
@@ -480,17 +479,26 @@ class Transport(object):
         yield_matrix = prob_steps[:, np.newaxis] * \
             br_matrix * de_valid[:, np.newaxis]
 
-        cont_yield_steps = None
-        if continuum_xs is not None:
-            cont_xs_e = np.array(sorted(continuum_xs.keys()))
-            cont_xs_v = np.array([continuum_xs[e] for e in cont_xs_e])
-            sigma91_cm2 = np.interp(
-                e_steps_valid, cont_xs_e, cont_xs_v, left=0.0, right=0.0) * 1e-24
+        cont_terms = []
+        if continua:
             sigma_total_cm2 = cs_cm2_grid[valid_mask]
-            f_91 = np.minimum(sigma91_cm2 / sigma_total_cm2, 1.0)
-            if np.any(f_91 > 0.0):
-                yield_matrix = yield_matrix * (1.0 - f_91[:, np.newaxis])
-                cont_yield_steps = prob_steps * de_valid * f_91
+            fractions = []
+            for channel in continua:
+                cont_xs_e = np.array(sorted(channel.xs.keys()))
+                cont_xs_v = np.array([channel.xs[e] for e in cont_xs_e])
+                sigma_cm2 = np.interp(
+                    e_steps_valid, cont_xs_e, cont_xs_v, left=0.0, right=0.0) * 1e-24
+                fractions.append(sigma_cm2 / sigma_total_cm2)
+            fractions = np.array(fractions)
+            f_sum = fractions.sum(axis=0)
+            over = f_sum > 1.0
+            fractions[:, over] /= f_sum[over]
+            f_sum = np.minimum(f_sum, 1.0)
+            if np.any(f_sum > 0.0):
+                yield_matrix = yield_matrix * (1.0 - f_sum[:, np.newaxis])
+                for channel, f_k in zip(continua, fractions):
+                    if np.any(f_k > 0.0):
+                        cont_terms.append((channel, prob_steps * de_valid * f_k))
 
         width_matrix = enmax - enmin
         width_matrix[width_matrix <= 0] = 1e-30
@@ -530,15 +538,15 @@ class Transport(object):
             spectrum = _accumulate_spectrum(
                 b_lo, b_hi, y_flat, w_flat, enmin_flat, enmax_flat)
 
-        if cont_yield_steps is not None:
-            if continuum_dist is not None:
+        for channel, cont_yield_steps in cont_terms:
+            if channel.f:
                 f_matrix = _preprocess_continuum_dist(
-                    continuum_dist, e_steps_valid, neutron_energy_bins)
+                    channel, e_steps_valid, neutron_energy_bins, target_mass_amu)
                 spectrum = spectrum + np.einsum('i,ij->j', cont_yield_steps, f_matrix)
             else:
                 spectrum = spectrum + _accumulate_spectrum_continuum_box(
                     b_lo, b_hi, cont_yield_steps, e_steps_valid,
-                    q_value, product_mass, target_mass_amu,
+                    channel.q_value, product_mass, target_mass_amu,
                     ANEUT_MASS, ALPH_MASS)
 
         return (np.sum(spectrum), spectrum,
@@ -653,8 +661,7 @@ class Transport(object):
                 'branching_data': {},
                 'energy_keys': [],
                 'gamma_target': gamma_target,
-                'continuum_xs': None,
-                'continuum_dist': None,
+                'continua': [],
                 'angular_dists': None,
             }
 
@@ -701,8 +708,7 @@ class Transport(object):
                     target_data_list.append(_gamma_only_entry(zaid, afrac, gamma_target))
                 continue
 
-            continuum_xs_data, continuum_dist_data = get_continuum_info(
-                zaid, an_xs_data_source)
+            continua_data = get_continuum_channels(zaid, an_xs_data_source)
 
             angular_dists_data = (
                 get_angular_distributions(zaid, an_xs_data_source)
@@ -719,8 +725,7 @@ class Transport(object):
                 'branching_data': branching_data,
                 'energy_keys': sorted(branching_data.keys()),
                 'gamma_target': gamma_target,
-                'continuum_xs': continuum_xs_data,
-                'continuum_dist': continuum_dist_data,
+                'continua': continua_data,
                 'angular_dists': angular_dists_data,
             })
 
@@ -763,8 +768,7 @@ class Transport(object):
                 t_data['target_mass_amu'],
                 t_data['energy_keys'],
                 gamma_target=gamma_target,
-                continuum_xs=t_data.get('continuum_xs'),
-                continuum_dist=t_data.get('continuum_dist'),
+                continua=t_data.get('continua'),
                 gamma_tally=gamma_tally,
                 angular_dists=t_data.get('angular_dists'),
                 level_indices=valid_level_indices,

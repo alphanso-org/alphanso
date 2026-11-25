@@ -6,6 +6,7 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 from scipy.interpolate import interp1d
 
+from .constants import ALPH_MASS, ANEUT_MASS
 from .parsers import get_stopping_power
 from .atomic_data_loader import (
     get_atomic_mass,
@@ -219,79 +220,290 @@ def rebin_endf_spectrum(
     return spectrum
 
 
-def _preprocess_continuum_dist(
-        continuum_dist: Optional[Dict[float, List[Tuple[float, float]]]],
-        e_steps_mev: np.ndarray,
-        neutron_bins: np.ndarray) -> np.ndarray:
-    """
-    Pre-process a tabulated continuum energy distribution onto the output energy bin grid.
+_ALPHA_BREAKUP_ENERGY = 28.29566
 
-    For each incident alpha energy step, bi-linearly interpolates f(E_out | E_alpha)
-    between the two bracketing tabulated incident energies and integrates over each
-    output energy bin using the trapezoidal rule.
+
+def _kalbach_separation_energy(z_c, a_c, z_x, a_x, breakup_energy):
+    """
+    Separation energy (MeV) of a particle from a compound nucleus, Kalbach systematics.
+
+    Uses the mass formula of Kalbach, Phys. Rev. C 37, 2350 (1988), Eq. 4, as given
+    in the ENDF-6 Formats Manual, File 6, LAW=1, LANG=2.
 
     Args:
-        continuum_dist: {incident_energy_MeV: [(E_out_MeV, prob_1/MeV), ...]}, or None
-        e_steps_mev: ndarray - Incident alpha energies at each integration step (MeV)
-        neutron_bins: ndarray - Neutron output energy bin edges (MeV)
+        z_c: int - Compound nucleus charge
+        a_c: int - Compound nucleus mass number
+        z_x: int - Charge of the nucleus left after the particle separates
+        a_x: int - Mass number of the nucleus left after the particle separates
+        breakup_energy: float - Binding energy of the particle itself (MeV)
 
     Returns:
-        ndarray - Shape (n_steps, n_bins). Each row gives the fraction of continuum
-        yield deposited in each output bin. Rows sum to <= 1.
+        float - Separation energy in MeV
+    """
+    n_c = a_c - z_c
+    n_x = a_x - z_x
+    return (15.68 * (a_c - a_x)
+            - 28.07 * ((n_c - z_c) ** 2 / a_c - (n_x - z_x) ** 2 / a_x)
+            - 18.56 * (a_c ** (2.0 / 3.0) - a_x ** (2.0 / 3.0))
+            + 33.22 * ((n_c - z_c) ** 2 / a_c ** (4.0 / 3.0)
+                       - (n_x - z_x) ** 2 / a_x ** (4.0 / 3.0))
+            - 0.717 * (z_c ** 2 / a_c ** (1.0 / 3.0) - z_x ** 2 / a_x ** (1.0 / 3.0))
+            + 1.211 * (z_c ** 2 / a_c - z_x ** 2 / a_x)
+            - breakup_energy)
+
+
+def _kalbach_slope_alpha_n(e_alpha, e_out_cm, target_z, target_a):
+    """
+    Kalbach-Mann slope parameter a for (alpha,n), from the Kalbach systematics.
+
+    ENDF-6 Formats Manual, File 6, LAW=1, LANG=2. For an incident alpha Ma = 0, so
+    the X3 term vanishes and a = C1 X1 + C2 X1^3.
+
+    Args:
+        e_alpha: float - Incident alpha energy in the lab (MeV)
+        e_out_cm: ndarray - Neutron emission energy in the center of mass (MeV)
+        target_z: int - Target charge
+        target_a: int - Target mass number
+
+    Returns:
+        ndarray - Slope parameter a, same shape as e_out_cm
+    """
+    z_c, a_c = target_z + 2, target_a + 4
+    a_b = target_a + 3
+    s_a = _kalbach_separation_energy(z_c, a_c, target_z, target_a, _ALPHA_BREAKUP_ENERGY)
+    s_b = _kalbach_separation_energy(z_c, a_c, z_c, a_b, 0.0)
+    e_a = e_alpha * target_a / (target_a + 4) + s_a
+    e_b = np.asarray(e_out_cm) * (a_b + 1) / a_b + s_b
+    x1 = min(e_a, 130.0) * e_b / e_a
+    return 0.04 * x1 + 1.8e-6 * x1 ** 3
+
+
+def _interpolate_continuum_table(tables, e_alpha, unit_base, density):
+    """
+    Interpolate a tabulated y(E_out | E_in) to one incident energy.
+
+    Between the two bracketing incident energies the tables are mixed linearly in
+    E_in. With unit_base, each table is first mapped onto [0, 1] over its own
+    E_out range, mixed there, and mapped back onto the interpolated range
+    (GNDS interpolationQualifier "unitbase"); density rescales y with the range so
+    that it stays normalized, which "unitbase-unscaled" quantities skip.
+
+    Args:
+        tables: dict - {E_in_MeV: [(E_out_MeV, y), ...]}
+        e_alpha: float - Incident alpha energy (MeV)
+        unit_base: bool - Interpolate on a unit base
+        density: bool - y is a density in E_out
+
+    Returns:
+        tuple (e_out, y) of ndarrays describing a piecewise-linear function, or
+        None below the first tabulated incident energy
+    """
+    inc = sorted(tables.keys())
+    if e_alpha < inc[0]:
+        return None
+
+    idx = int(np.searchsorted(inc, e_alpha, side='right')) - 1
+    idx = max(0, min(idx, len(inc) - 2))
+    e_lo = inc[idx]
+    e_hi = inc[min(idx + 1, len(inc) - 1)]
+    t = (e_alpha - e_lo) / (e_hi - e_lo) if e_hi > e_lo else 0.0
+    t = max(0.0, min(t, 1.0))
+
+    lo = np.asarray(tables[e_lo], dtype=float)
+    hi = np.asarray(tables[e_hi], dtype=float)
+    eo_lo, y_lo = lo[:, 0], lo[:, 1]
+    eo_hi, y_hi = hi[:, 0], hi[:, 1]
+
+    if not unit_base:
+        e_out = np.unique(np.concatenate([eo_lo, eo_hi]))
+        y = ((1.0 - t) * np.interp(e_out, eo_lo, y_lo, left=0.0, right=0.0)
+             + t * np.interp(e_out, eo_hi, y_hi, left=0.0, right=0.0))
+        return e_out, y
+
+    w_lo = max(eo_lo[-1] - eo_lo[0], 1e-30)
+    w_hi = max(eo_hi[-1] - eo_hi[0], 1e-30)
+    x_lo = (eo_lo - eo_lo[0]) / w_lo
+    x_hi = (eo_hi - eo_hi[0]) / w_hi
+    x = np.unique(np.concatenate([x_lo, x_hi]))
+    u_lo = np.interp(x, x_lo, y_lo)
+    u_hi = np.interp(x, x_hi, y_hi)
+    if density:
+        u_lo = u_lo * w_lo
+        u_hi = u_hi * w_hi
+    u = (1.0 - t) * u_lo + t * u_hi
+    e_min = (1.0 - t) * eo_lo[0] + t * eo_hi[0]
+    width = (1.0 - t) * w_lo + t * w_hi
+    y = u / width if density else u
+    return e_min + x * width, y
+
+
+def _continuum_lab_cdf(e_out, f, edges):
+    """
+    Cumulative integral of a lab-frame piecewise-linear energy density at given energies.
+
+    Args:
+        e_out: ndarray - Outgoing energies (MeV)
+        f: ndarray - Density at e_out (1/MeV)
+        edges: ndarray - Energies at which to evaluate the cumulative integral (MeV)
+
+    Returns:
+        ndarray - Integral of f from 0 to each edge
+    """
+    cdf = np.zeros(len(e_out))
+    cdf[1:] = np.cumsum(0.5 * (f[:-1] + f[1:]) * np.diff(e_out))
+    return np.interp(edges, e_out, cdf, left=0.0, right=cdf[-1])
+
+
+def _continuum_cm_cdf(e_out, f, r_table, e_alpha, e_cm_neutron,
+                      target_z, target_a, edges, n_sub=4):
+    """
+    Cumulative lab-frame integral of a center-of-mass energy-angle distribution.
+
+    Each panel of the piecewise-linear f(E') is split into n_sub sub-panels and
+    represented by its midpoint E' with the sub-panel integral as weight. A neutron
+    emitted with CM energy E' at CM cosine mu has lab energy
+    E = E' + E_c + 2 sqrt(E' E_c) mu, where E_c is the energy of a neutron moving
+    with the center of mass, so each node spreads over
+    [(sqrt(E') - sqrt(E_c))^2, (sqrt(E') + sqrt(E_c))^2] following its angular
+    distribution. Kalbach-Mann emission has
+    p(mu) = a / (2 sinh a) (cosh(a mu) + r sinh(a mu)); without r it is isotropic.
+
+    Args:
+        e_out: ndarray - CM outgoing energies (MeV)
+        f: ndarray - CM energy density at e_out (1/MeV)
+        r_table: tuple or None - (e_out, r) precompound fraction, None for isotropic
+        e_alpha: float - Incident alpha energy (MeV)
+        e_cm_neutron: float - E_c (MeV)
+        target_z: int - Target charge
+        target_a: int - Target mass number
+        edges: ndarray - Ascending lab energies at which to evaluate (MeV)
+        n_sub: int - Sub-panels per tabulated panel
+
+    Returns:
+        ndarray - Lab-frame yield below each edge
+    """
+    de = np.diff(e_out)
+    frac = (np.arange(n_sub) + 0.5) / n_sub
+    nodes = (e_out[:-1, np.newaxis] + de[:, np.newaxis] * frac).ravel()
+    weights = np.interp(nodes, e_out, f) * np.repeat(de / n_sub, n_sub)
+    keep = weights > 0.0
+    nodes = nodes[keep]
+    weights = weights[keep]
+    result = np.zeros(len(edges))
+    if len(nodes) == 0:
+        return result
+
+    root_c = np.sqrt(e_cm_neutron)
+    root_n = np.sqrt(nodes)
+    lab_min = np.min((root_n - root_c) ** 2)
+    lab_max = np.max((root_n + root_c) ** 2)
+    result[edges >= lab_max] = weights.sum()
+    active = (edges > lab_min) & (edges < lab_max)
+    if not np.any(active):
+        return result
+
+    half_span = np.maximum(2.0 * root_n * root_c, 1e-300)
+    mu = np.clip((edges[active, np.newaxis] - (nodes + e_cm_neutron)) / half_span,
+                 -1.0, 1.0)
+
+    if r_table is None:
+        cdf = 0.5 * (mu + 1.0)
+    else:
+        a = _kalbach_slope_alpha_n(e_alpha, nodes, target_z, target_a)
+        r = np.interp(nodes, r_table[0], r_table[1])
+        sinh_a = np.sinh(a)
+        x = np.exp(a * mu)
+        cdf = (0.5 * ((1.0 + r) * x - (1.0 - r) / x)
+               + sinh_a - r * np.cosh(a)) / (2.0 * sinh_a)
+
+    result[active] = np.clip(cdf, 0.0, 1.0) @ weights
+    return result
+
+
+def _preprocess_continuum_dist(channel, e_steps_mev, neutron_bins, target_mass_amu,
+                               e_spacing=0.02, n_sub=4):
+    """
+    Lab-frame continuum neutron spectrum shape on the output bins, per alpha step.
+
+    Interpolates the channel's tabulated distribution to each incident alpha energy
+    (on a unit base when the evaluation asks for it) and, for a center-of-mass
+    distribution, transforms it to the lab using its angular distribution. The
+    shape is evaluated at alpha energies about e_spacing apart and linearly
+    interpolated between them, since it changes little over one slowing-down step.
+
+    Args:
+        channel: ContinuumChannel - Continuum channel with a tabulated f
+        e_steps_mev: ndarray - Incident alpha energies at each integration step (MeV)
+        neutron_bins: ndarray - Neutron output energy bin edges (MeV)
+        target_mass_amu: float - Target mass (amu)
+        e_spacing: float - Alpha energy spacing at which the shape is evaluated (MeV)
+        n_sub: int - Sub-panels per tabulated CM panel, see _continuum_cm_cdf
+
+    Returns:
+        ndarray - Shape (n_steps, n_bins). Each nonzero row sums to 1.
     """
     n_steps = len(e_steps_mev)
     n_bins = len(neutron_bins) - 1
     f_matrix = np.zeros((n_steps, n_bins))
 
-    if continuum_dist is None or len(continuum_dist) == 0:
+    if channel is None or not channel.f:
         return f_matrix
 
-    inc_energies = sorted(continuum_dist.keys())
-    e_min_tab = inc_energies[0]
+    edges, inverse = np.unique(np.asarray(neutron_bins, dtype=float), return_inverse=True)
+    i_lo = np.minimum(inverse[:-1], inverse[1:])
+    i_hi = np.maximum(inverse[:-1], inverse[1:])
+    target_z, target_a = channel.zaid // 1000, channel.zaid % 1000
+    in_cm = channel.frame == 'centerOfMass'
+    cm_factor = ALPH_MASS * ANEUT_MASS / (ALPH_MASS + target_mass_amu) ** 2
 
-    b_lo = np.minimum(neutron_bins[:-1], neutron_bins[1:])
-    b_hi = np.maximum(neutron_bins[:-1], neutron_bins[1:])
+    def shape_at(e_alpha):
+        table = _interpolate_continuum_table(channel.f, e_alpha, channel.unit_base, True)
+        if table is None:
+            return None
+        e_out, f = table
+        if in_cm:
+            r_table = None
+            if channel.r:
+                r_table = _interpolate_continuum_table(
+                    channel.r, e_alpha, channel.unit_base, False)
+            cdf = _continuum_cm_cdf(
+                e_out, f, r_table, e_alpha, cm_factor * e_alpha,
+                target_z, target_a, edges, n_sub=n_sub)
+        else:
+            cdf = _continuum_lab_cdf(e_out, f, edges)
+        row = np.maximum(0.0, cdf[i_hi] - cdf[i_lo])
+        row_sum = row.sum()
+        return row / row_sum if row_sum > 0.0 else None
 
-    for i in range(n_steps):
-        e_alpha = e_steps_mev[i]
-        if e_alpha < e_min_tab:
-            continue
+    e_steps = np.asarray(e_steps_mev, dtype=float)
+    e_first = min(channel.f.keys())
+    above = np.nonzero(e_steps >= e_first)[0]
+    if len(above) == 0:
+        return f_matrix
 
-        idx = int(np.searchsorted(inc_energies, e_alpha, side='right')) - 1
-        idx = min(idx, len(inc_energies) - 2)
+    e_lo_eval, e_hi_eval = e_steps[above].min(), e_steps[above].max()
+    n_eval = len(above)
+    if e_spacing > 0.0:
+        n_eval = max(2, int(np.ceil((e_hi_eval - e_lo_eval) / e_spacing)) + 1)
+    if n_eval >= len(above):
+        for i in above:
+            row = shape_at(e_steps[i])
+            if row is not None:
+                f_matrix[i] = row
+        return f_matrix
 
-        e_lo = inc_energies[idx]
-        e_hi_tab = inc_energies[idx + 1]
-        pairs_lo = continuum_dist[e_lo]
-        pairs_hi = continuum_dist[e_hi_tab]
-
-        eo_lo = np.array([p[0] for p in pairs_lo])
-        fp_lo = np.array([p[1] for p in pairs_lo])
-        eo_hi = np.array([p[0] for p in pairs_hi])
-        fp_hi = np.array([p[1] for p in pairs_hi])
-
-        merged_e = np.unique(np.concatenate([eo_lo, eo_hi]))
-        f_lo_interp = np.interp(merged_e, eo_lo, fp_lo, left=0.0, right=0.0)
-        f_hi_interp = np.interp(merged_e, eo_hi, fp_hi, left=0.0, right=0.0)
-
-        t = (e_alpha - e_lo) / (e_hi_tab - e_lo) if e_hi_tab > e_lo else 0.0
-        t = max(0.0, min(t, 1.0))
-        f_blend = f_lo_interp + t * (f_hi_interp - f_lo_interp)
-
-        cdf = np.zeros(len(merged_e))
-        cdf[1:] = np.cumsum(
-            0.5 * (f_blend[:-1] + f_blend[1:]) * np.diff(merged_e)
-        )
-        cdf_lo = np.interp(b_lo, merged_e, cdf, left=0.0, right=cdf[-1])
-        cdf_hi = np.interp(b_hi, merged_e, cdf, left=0.0, right=cdf[-1])
-        bin_integrals = np.maximum(0.0, cdf_hi - cdf_lo)
-
-        valid_bins = b_hi > b_lo
-        f_matrix[i, valid_bins] = bin_integrals[valid_bins]
-
-        row_sum = f_matrix[i].sum()
-        if row_sum > 0.0:
-            f_matrix[i] /= row_sum
+    e_eval = np.linspace(e_lo_eval, e_hi_eval, n_eval)
+    rows = np.zeros((n_eval, n_bins))
+    for k, e_alpha in enumerate(e_eval):
+        row = shape_at(e_alpha)
+        if row is not None:
+            rows[k] = row
+    e_q = e_steps[above]
+    k = np.clip(np.searchsorted(e_eval, e_q, side='right') - 1, 0, n_eval - 2)
+    t = ((e_q - e_eval[k]) / (e_eval[k + 1] - e_eval[k]))[:, np.newaxis]
+    f_matrix[above] = (1.0 - t) * rows[k] + t * rows[k + 1]
+    sums = f_matrix[above].sum(axis=1)
+    f_matrix[above[sums > 0.0]] /= sums[sums > 0.0, np.newaxis]
 
     return f_matrix
 
@@ -303,16 +515,17 @@ def _accumulate_spectrum_continuum_box(
     """
     Accumulate continuum channel spectrum using a kinematic box fallback.
 
-    Used when no tabulated neutron energy distribution is available for MT=91.
-    Distributes each alpha step's yield uniformly over [0, enmax_91] computed
-    from the same two-body kinematic formula as discrete levels with level_energy=0.
+    Used when a continuum channel has no tabulated neutron energy distribution.
+    Distributes each alpha step's yield uniformly over [0, enmax] computed
+    from the same two-body kinematic formula as discrete levels, with the Q-value
+    at the start of the channel.
 
     Args:
         b_lo: ndarray - Lower edges of neutron energy bins (MeV)
         b_hi: ndarray - Upper edges of neutron energy bins (MeV)
         cont_yield: ndarray - Continuum yield integrand at each alpha step
         e_steps: ndarray - Alpha energies at each step (MeV)
-        q_value: float - Ground-state Q-value used as continuum Q approximation (MeV)
+        q_value: float - Q-value at the start of the channel, ENDF QI (MeV)
         product_mass: float - Product nucleus mass (amu)
         target_mass_amu: float - Target nucleus mass (amu)
         aneut_mass: float - Neutron mass (amu)

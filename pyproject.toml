@@ -43,4 +43,4 @@ alphanso = ["data/atomic_data/*", "data/data_overrides.yaml"]
 [project.urls]
 Repository = "https://github.com/alphanso-org/alphanso"
 Issues = "https://github.com/alphanso-org/alphanso/issues"
-Paper = "https://arxiv.org/abs/2603.17719"
+Paper = "https://doi.org/10.1016/j.nima.2026.171713"
